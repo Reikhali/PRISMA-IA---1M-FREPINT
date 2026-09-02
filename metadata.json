@@ -1,0 +1,6 @@
+{
+  "name": "PRISMA IA - MODO VECTOR OTC",
+  "description": "Terminal operacional PRISMA IA Modo Vector OTC integrado com a corretora Optgo Broker (trade.optgobroker.com/traderoom), motor de consenso de 3 votos (Tendência EMA, Momento RSI, Volatilidade ATR), 148 ativos OTC em tempo real, conexão SSID e automação.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
