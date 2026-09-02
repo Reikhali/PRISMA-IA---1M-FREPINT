@@ -69,7 +69,7 @@ export function ChineseBotPanel({
   currentSorosLevel,
 }: ChineseBotPanelProps) {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1M');
-  const [selectedStrategyMode, setSelectedStrategyMode] = useState<StrategyMode>('manipulator_hunter');
+  const [selectedStrategyMode, setSelectedStrategyMode] = useState<StrategyMode>('poc_volume_profile');
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [orderAmount, setOrderAmount] = useState<number>(10);
   const [managementMode, setManagementMode] = useState<'fixed' | 'soros' | 'martingale'>('fixed');
@@ -186,19 +186,9 @@ export function ChineseBotPanel({
 
     setTimeout(() => {
       setScanStepText(
-        selectedStrategyMode === 'manipulator_hunter'
-          ? '3/3: Rastreador de Manipulador (Stop Hunt, Falso Rompimento e Absorção de Liquidez)...'
-          : selectedStrategyMode === 'full_confluence'
-            ? '3/3: Confluência Suprema de 5 Motores (Manipulador + POC + Footprint + QX + Prisma)...'
-            : selectedStrategyMode === 'poc_volume_profile'
-              ? '3/3: Calculando Blocos de Volume Profile, Nível Amarelo da POC e Reteste...'
-              : selectedStrategyMode === 'footprint_orderflow'
-                ? '3/3: Calculando Clusters de Volume, POC, Delta e Zonas de Absorção...'
-                : selectedStrategyMode === 'hybrid_confluence'
-                  ? '3/3: Calculando Confluência Total (POC + PRISMA 3 Votos + QUOTEXHACK)...'
-                  : selectedStrategyMode === 'quotex_hack'
-                    ? '3/3: Calculando QUOTEXHACK (Pavio + Suporte/Resistência + Timing :58s)...'
-                    : '3/3: Calculando Confluência EMA 9/21 + RSI 14 + Filtro ATR...'
+        selectedStrategyMode === 'poc_volume_profile'
+          ? '3/3: Calculando Blocos de Volume Profile, Nível Amarelo da POC e Reteste...'
+          : '3/3: Calculando Clusters de Volume, POC Institucional, Delta e Zonas de Absorção...'
       );
     }, 500);
 
@@ -326,19 +316,9 @@ export function ChineseBotPanel({
           playSignalTriggerSound(dir);
 
           const stratLabel =
-            selectedStrategyModeRef.current === 'manipulator_hunter'
-              ? `MANIPULATOR_TRAP_HUNTER (${currentSig.verdictWord})`
-              : selectedStrategyModeRef.current === 'full_confluence'
-                ? `CONFLUENCIA_5_MOTORES (${currentSig.verdictWord})`
-                : selectedStrategyModeRef.current === 'poc_volume_profile'
-                  ? `POC_VOLUME_PROFILE (${currentSig.verdictWord})`
-                  : selectedStrategyModeRef.current === 'footprint_orderflow'
-                    ? `ORDER_FLOW_FOOTPRINT (${currentSig.verdictWord})`
-                    : selectedStrategyModeRef.current === 'hybrid_confluence'
-                      ? `CONFLUENCIA_HIBRIDA_QX (${currentSig.verdictWord})`
-                      : selectedStrategyModeRef.current === 'quotex_hack'
-                        ? `QUOTEXHACK_ALGO (${currentSig.verdictWord})`
-                        : `PRISMA_VECTOR_3VOTOS (${currentSig.verdictWord})`;
+            selectedStrategyModeRef.current === 'poc_volume_profile'
+              ? `POC_VOLUME_PROFILE (${currentSig.verdictWord})`
+              : `ORDER_FLOW_FOOTPRINT (${currentSig.verdictWord})`;
 
           onExecuteOrderRef.current(dir, effectiveStakeRef.current, stratLabel);
           setLastExecutedCandleTime(formatBrtTime(now));
@@ -360,19 +340,9 @@ export function ChineseBotPanel({
     const dir = analyzedSignal.verdict === 'CALL' ? 'call' : 'put';
     playSignalTriggerSound(dir);
     const stratLabel =
-      selectedStrategyMode === 'manipulator_hunter'
-        ? `MANIPULADOR TRAP HUNTER (${analyzedSignal.verdictWord})`
-        : selectedStrategyMode === 'full_confluence'
-          ? `CONFLUÊNCIA 5 MOTORES (${analyzedSignal.verdictWord})`
-          : selectedStrategyMode === 'poc_volume_profile'
-            ? `POC & VOLUME PROFILE (${analyzedSignal.verdictWord})`
-            : selectedStrategyMode === 'footprint_orderflow'
-              ? `ORDER FLOW FOOTPRINT (${analyzedSignal.verdictWord})`
-              : selectedStrategyMode === 'hybrid_confluence'
-                ? `CONFLUÊNCIA HÍBRIDA (PRISMA + QX) (${analyzedSignal.verdictWord})`
-                : selectedStrategyMode === 'quotex_hack'
-                  ? `QUOTEXHACK ALGO (${analyzedSignal.verdictWord})`
-                  : `PRISMA IA VECTOR (${analyzedSignal.verdictWord})`;
+      selectedStrategyMode === 'poc_volume_profile'
+        ? `POC & VOLUME PROFILE (${analyzedSignal.verdictWord})`
+        : `ORDER FLOW FOOTPRINT (${analyzedSignal.verdictWord})`;
     await onExecuteOrder(dir, effectiveStake, stratLabel);
   };
 
@@ -464,25 +434,18 @@ export function ChineseBotPanel({
 
         {/* Strategy Guide Drawer */}
         {showStrategyGuide && (
-          <div className="mt-4 pt-4 border-t border-emerald-500/20 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs font-mono">
-            <div className="bg-[#020509]/90 border border-emerald-500/20 rounded-xl p-3 space-y-1">
-              <span className="text-emerald-400 font-bold block uppercase">1. Confluência Híbrida (Recomendado 98%)</span>
+          <div className="mt-4 pt-4 border-t border-emerald-500/20 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
+            <div className="bg-[#020509]/90 border border-amber-500/30 rounded-xl p-3 space-y-1">
+              <span className="text-amber-400 font-bold block uppercase">🟡 1. POC &amp; Volume Profile (Linha Amarela &amp; Reteste)</span>
               <p className="text-slate-300">
-                Une a precisão matemática do PRISMA (3 Votos: EMA + RSI + ATR) com a leitura de pavio e fluxo do QUOTEXHACK. Só gera CALL/PUT quando ambos concordam.
+                Calcula o nível de maior volume negociado da sessão (Linha Amarela da POC). Gera sinal de CALL no reteste comprador ou PUT na rejeição de topo com confirmação de blocos de perfil.
               </p>
             </div>
 
-            <div className="bg-[#020509]/90 border border-emerald-500/20 rounded-xl p-3 space-y-1">
-              <span className="text-emerald-400 font-bold block uppercase">2. QUOTEXHACK Algo (Pavio &amp; Timing :58s)</span>
+            <div className="bg-[#020509]/90 border border-emerald-500/30 rounded-xl p-3 space-y-1">
+              <span className="text-emerald-400 font-bold block uppercase">📊 2. Footprint Order Flow (Clusters &amp; Delta)</span>
               <p className="text-slate-300">
-                Detecta rejeições de pavio superior/inferior em regiões de suporte/resistência OTC. Disparo calibrado aos :58s para execução imediata no segundo :00 com plano de MG1 (2.2x).
-              </p>
-            </div>
-
-            <div className="bg-[#020509]/90 border border-emerald-500/20 rounded-xl p-3 space-y-1">
-              <span className="text-emerald-400 font-bold block uppercase">3. PRISMA Vector (Consenso 3 Votos)</span>
-              <p className="text-slate-300">
-                Cruzamento triplo de médias EMA 9 x 21 x 50, força direcional RSI 14 e filtro de ruído ATR para filtrar mercados laterais com veredito NO TRADE.
+                Mapeia os clusters de volume bid/ask em cada nível de preço da vela e calcula a absorção nas zonas institucionais (caixas brancas) para antecipar a reversão de fluxo.
               </p>
             </div>
           </div>
@@ -625,7 +588,7 @@ export function ChineseBotPanel({
             </div>
           </div>
 
-          {/* Step 4: Strategy Mode Selection (POC + FOOTPRINT + HÍBRIDO + QUOTEXHACK + PRISMA) */}
+          {/* Step 4: Strategy Mode Selection (POC + FOOTPRINT) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -635,70 +598,14 @@ export function ChineseBotPanel({
                 <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Estratégia de Sinal</span>
               </div>
               <span className="text-[10px] font-mono uppercase bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 border border-emerald-500/40 font-bold">
-                {selectedStrategyMode === 'manipulator_hunter'
-                  ? '🕵️ DETECTOR DE MANIPULADOR'
-                  : selectedStrategyMode === 'full_confluence'
-                    ? '⚡ CONFLUÊNCIA SUPREMA (5 MOTORES)'
-                    : selectedStrategyMode === 'poc_volume_profile'
-                      ? 'POC & VOLUME PROFILE'
-                      : selectedStrategyMode === 'footprint_orderflow'
-                        ? 'ORDER FLOW CLUSTER'
-                        : selectedStrategyMode === 'hybrid_confluence'
-                          ? '98% CONFLUÊNCIA'
-                          : selectedStrategyMode === 'quotex_hack'
-                            ? 'QUOTEXHACK ALGO'
-                            : 'PRISMA 3 VOTOS'}
+                {selectedStrategyMode === 'poc_volume_profile'
+                  ? '🟡 POC & VOLUME PROFILE'
+                  : '📊 ORDER FLOW CLUSTERS'}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
-              {/* Option 1: DETECTOR DE MANIPULADOR */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('manipulator_hunter');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'manipulator_hunter'
-                    ? 'bg-purple-500/25 border-purple-400 shadow-md shadow-purple-500/25'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-purple-500/40'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-purple-300">🕵️ MANIPULADOR</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-400 text-black font-black">TRAP M1</span>
-                </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Stop Hunt, Falso Rompimento e Trap de Liquidez
-                </p>
-              </button>
-
-              {/* Option 2: CONFLUÊNCIA SUPREMA (5 Motores) */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('full_confluence');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'full_confluence'
-                    ? 'bg-emerald-500/25 border-emerald-400 shadow-md shadow-emerald-500/25'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/40'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-300">⚡ 5 MOTORES</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">99% CONFL</span>
-                </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Manipulador + POC + Footprint + QuotexHack + Prisma IA
-                </p>
-              </button>
-
-              {/* Option 3: POC & Volume Profile */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              {/* Option 1: POC & Volume Profile */}
               <button
                 type="button"
                 onClick={() => {
@@ -706,22 +613,24 @@ export function ChineseBotPanel({
                   setSelectedStrategyMode('poc_volume_profile');
                   setAnalyzedSignal(null);
                 }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
+                className={`p-3.5 rounded-xl text-left border transition-all ${
                   selectedStrategyMode === 'poc_volume_profile'
-                    ? 'bg-amber-500/20 border-amber-400 shadow-md shadow-amber-500/20'
+                    ? 'bg-amber-500/20 border-amber-400 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/50'
                     : 'bg-[#020509]/80 border-white/10 hover:border-amber-500/30'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-amber-400">🟡 POC & PERFIL</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-400 text-black font-black">M1 FOTO</span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold font-mono text-amber-400 flex items-center gap-1.5">
+                    🟡 POC &amp; PERFIL
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-400 text-black font-black">M1 FOTO</span>
                 </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Reteste na Linha Amarela da POC + Blocos de Volume
+                <p className="text-[11px] text-slate-300 font-mono leading-tight">
+                  Reteste na Linha Amarela da POC + Blocos de Volume Profile
                 </p>
               </button>
 
-              {/* Option 4: Footprint Order Flow */}
+              {/* Option 2: Footprint Order Flow */}
               <button
                 type="button"
                 onClick={() => {
@@ -729,64 +638,20 @@ export function ChineseBotPanel({
                   setSelectedStrategyMode('footprint_orderflow');
                   setAnalyzedSignal(null);
                 }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
+                className={`p-3.5 rounded-xl text-left border transition-all ${
                   selectedStrategyMode === 'footprint_orderflow'
-                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20'
+                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20 ring-1 ring-emerald-400/50'
                     : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/30'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">📊 ORDER FLOW</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">CLUSTERS</span>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-bold font-mono text-emerald-400 flex items-center gap-1.5">
+                    📊 ORDER FLOW
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-400 text-black font-black">CLUSTERS</span>
                 </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Clusters de Volume + Zonas de Absorção (Caixas Brancas)
-                </p>
-              </button>
-
-              {/* Option 5: QuotexHack Algo */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('quotex_hack');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'quotex_hack'
-                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/30'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">🎯 QUOTEXHACK</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">M1 :58s</span>
-                </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Rejeição de Pavio + Suporte/Resistência + MG1
-                </p>
-              </button>
-
-              {/* Option 6: Prisma Vector 3 Votos */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('vector_3votes');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'vector_3votes'
-                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/30'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">🤖 PRISMA VECTOR</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">3 VOTOS</span>
-                </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  Consenso Tendência EMA + RSI 14 + Filtro ATR
+                <p className="text-[11px] text-slate-300 font-mono leading-tight">
+                  Clusters de Volume M1 + Delta e Zonas de Absorção
                 </p>
               </button>
             </div>

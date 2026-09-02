@@ -549,13 +549,14 @@ export function CandleChart({
               <button
                 type="button"
                 onClick={() => setShowWatermark(!showWatermark)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border ${
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border flex items-center gap-1 ${
                   showWatermark
-                    ? 'bg-cyan-500/20 border-cyan-500/40 text-cyan-300'
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
                     : 'bg-black/40 border-white/10 text-slate-400'
                 }`}
               >
-                DEMO: {showWatermark ? 'ON' : 'OFF'}
+                <span>💎 Logo Prisma:</span>
+                <span>{showWatermark ? 'ON' : 'OFF'}</span>
               </button>
             </>
           )}
@@ -605,20 +606,55 @@ export function CandleChart({
               );
             })}
 
-            {/* DEMO Watermark Overlay */}
+            {/* PRISMA Logo & Demo Watermark Overlay (Discreto & Ativável/Desativável) */}
             {showWatermark && (
-              <g opacity="0.12" pointerEvents="none">
+              <g opacity="0.10" pointerEvents="none">
+                {/* Vector Prism Diamond */}
+                <g transform={`translate(${W / 2 - 36}, ${H / 2 - 75}) scale(1.5)`}>
+                  <polygon
+                    points="24,2 44,16 36,44 12,44 4,16"
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="2.5"
+                  />
+                  <polygon
+                    points="24,2 36,44 24,32"
+                    fill="#10b981"
+                    fillOpacity="0.3"
+                  />
+                  <polygon
+                    points="24,2 12,44 24,32"
+                    fill="#38bdf8"
+                    fillOpacity="0.3"
+                  />
+                  <line x1="24" y1="2" x2="24" y2="44" stroke="#ffffff" strokeWidth="1.5" />
+                  <line x1="4" y1="16" x2="44" y2="16" stroke="#ffffff" strokeWidth="1" strokeDasharray="3,3" />
+                </g>
+
                 <text
                   x={W / 2}
-                  y={H / 2 + 10}
+                  y={H / 2 + 20}
                   fill="#ffffff"
-                  fontSize="120"
+                  fontSize="44"
                   fontWeight="900"
                   fontFamily="sans-serif"
                   textAnchor="middle"
-                  letterSpacing="12"
+                  letterSpacing="10"
                 >
-                  DEMO
+                  PRISMA VECTOR
+                </text>
+
+                <text
+                  x={W / 2}
+                  y={H / 2 + 48}
+                  fill="#10b981"
+                  fontSize="14"
+                  fontWeight="800"
+                  fontFamily="monospace"
+                  textAnchor="middle"
+                  letterSpacing="6"
+                >
+                  DEMO ENGINE • OTC M1
                 </text>
               </g>
             )}
