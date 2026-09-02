@@ -318,7 +318,7 @@ export async function getCandles(activeId: number, count = 150): Promise<Candle[
     const res = await session.sendReq({
       name: "get-candles",
       version: "2.0",
-      body: { active_id: activeId, size: 60, duration: 60 },
+      body: { active_id: activeId, size: 60, duration: Math.max(count * 60, 7200) },
     });
     return parseCandlesMsg(res.msg).slice(-count);
   });

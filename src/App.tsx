@@ -64,9 +64,22 @@ export default function App() {
             if (prev.length === 0) return json.candles;
             const lastPrev = prev[prev.length - 1];
             const lastNew = json.candles[json.candles.length - 1];
+            // Scale mismatch protection
+            if (lastPrev && lastNew && Math.abs(lastPrev.close - lastNew.close) > Math.max(lastPrev.close, lastNew.close) * 0.35) {
+              return json.candles;
+            }
+            if (lastPrev && lastNew && lastNew.time < lastPrev.time) {
+              // Ignore stale historical snapshot that is behind current live stream
+              return prev;
+            }
             if (lastPrev && lastNew && lastPrev.time === lastNew.time) {
-              const copy = [...prev];
-              copy[copy.length - 1] = lastNew;
+              const copy = [...json.candles.slice(0, -1)];
+              copy.push({
+                ...lastNew,
+                high: Math.max(lastNew.high, lastPrev.high),
+                low: Math.min(lastNew.low, lastPrev.low),
+                close: lastPrev.close,
+              });
               return copy;
             }
             return json.candles;
@@ -80,10 +93,12 @@ export default function App() {
   }, [selectedAsset.id]);
 
   useEffect(() => {
+    setCandles([]);
+    setAnalysis(null);
     refreshData();
     const interval = setInterval(refreshData, 3000);
     return () => clearInterval(interval);
-  }, [refreshData]);
+  }, [selectedAsset.id, refreshData]);
 
   // Live SSE Tick Streaming for continuous price updates
   useEffect(() => {
@@ -95,6 +110,11 @@ export default function App() {
         if (tickCandle.activeId === selectedAsset.id) {
           setCandles((prev) => {
             if (prev.length === 0) return [tickCandle];
+            const first = prev[0];
+            // If scale mismatch from previous pair, reset to new candle stream
+            if (first && Math.abs(first.close - tickCandle.close) > Math.max(first.close, tickCandle.close) * 0.35) {
+              return [tickCandle];
+            }
             const last = prev[prev.length - 1];
             if (last.time === tickCandle.time) {
               const updated = [...prev];

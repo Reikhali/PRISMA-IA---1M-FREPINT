@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { OTC_ASSETS, getAssetById } from './src/lib/otc-assets';
+import { getAssetPriceConfig } from './src/lib/asset-pricing';
 import { analyze } from './src/lib/analysis';
 import { evaluateTaxaDividida } from './src/lib/taxa-dividida';
 import {
@@ -55,41 +56,6 @@ const assetStates = new Map<number, {
   lastCandleMinute: number;
 }>();
 
-function getInitialBasePrice(id: number, category: string): number {
-  switch (category) {
-    case 'crypto':
-      if (id === 1934 || id === 1939) return 64200.50; // BTC
-      if (id === 1940 || id === 1941) return 3480.20; // ETH
-      if (id === 2439) return 148.50; // SOL
-      if (id === 2440) return 0.5820; // XRP
-      return 120.0;
-    case 'commodity':
-      if (id === 1931 || id === 1859) return 78.45; // Oil
-      if (id === 1932) return 2380.50; // Gold
-      if (id === 1933) return 29.40; // Silver
-      return 85.0;
-    case 'index':
-      if (id === 1971) return 5620.0; // SP500
-      if (id === 1972) return 19800.0; // NDAQ
-      if (id === 1973) return 41200.0; // US30
-      return 18500.0;
-    case 'stock':
-      if (id === 1938) return 224.50; // Apple
-      if (id === 1935) return 188.20; // Amazon
-      if (id === 1936) return 215.30; // Tesla
-      if (id === 2084) return 128.40; // NVDA
-      return 150.0;
-    default:
-      // Forex
-      if (id === 76) return 1.08450; // EURUSD OTC
-      if (id === 1) return 1.08450;
-      if (id === 2) return 154.200; // USDJPY OTC
-      if (id === 3) return 1.29340; // GBPUSD OTC
-      if (id === 1380) return 18.2500;
-      return 1.12000;
-  }
-}
-
 function getAssetCandles(activeId: number, count = 150): Candle[] {
   const asset = getAssetById(activeId) || OTC_ASSETS[0];
   const now = Math.floor(Date.now() / 1000);
@@ -97,26 +63,28 @@ function getAssetCandles(activeId: number, count = 150): Candle[] {
 
   let state = assetStates.get(activeId);
   if (!state) {
-    const base = getInitialBasePrice(activeId, asset.category);
+    const config = getAssetPriceConfig(activeId);
+    const base = config.basePrice;
+    const volatility = config.volatility;
+    const precision = config.precision || asset.precision || 5;
     const candles: Candle[] = [];
     let price = base;
-    const volatility = base > 1000 ? base * 0.0008 : base > 10 ? base * 0.0005 : 0.00015;
 
     // Build 150 prior minutes
     for (let i = 150; i >= 1; i--) {
       const cTime = currentMinute - i * 60;
       const seed = Math.sin(cTime * 0.01 + activeId * 13) + Math.cos(cTime * 0.05);
-      const delta = seed * volatility + (Math.sin(i / 10) * volatility * 0.8);
+      const delta = seed * (volatility * 0.8) + (Math.sin(i / 10) * volatility * 0.5);
       const open = price;
       const close = Math.max(open * 0.5, open + delta);
       const high = Math.max(open, close) + Math.abs(seed) * volatility * 0.6;
       const low = Math.min(open, close) - Math.abs(seed) * volatility * 0.6;
       candles.push({
         time: cTime,
-        open: Number(open.toFixed(asset.precision || 5)),
-        high: Number(high.toFixed(asset.precision || 5)),
-        low: Number(low.toFixed(asset.precision || 5)),
-        close: Number(close.toFixed(asset.precision || 5)),
+        open: Number(open.toFixed(precision)),
+        high: Number(high.toFixed(precision)),
+        low: Number(low.toFixed(precision)),
+        close: Number(close.toFixed(precision)),
         volume: Math.floor(50 + Math.abs(seed) * 200),
       });
       price = close;
@@ -129,10 +97,10 @@ function getAssetCandles(activeId: number, count = 150): Candle[] {
     const close = open;
     candles.push({
       time: currentMinute,
-      open: Number(open.toFixed(asset.precision || 5)),
-      high: Number(high.toFixed(asset.precision || 5)),
-      low: Number(low.toFixed(asset.precision || 5)),
-      close: Number(close.toFixed(asset.precision || 5)),
+      open: Number(open.toFixed(precision)),
+      high: Number(high.toFixed(precision)),
+      low: Number(low.toFixed(precision)),
+      close: Number(close.toFixed(precision)),
       volume: 10,
     });
 
@@ -165,8 +133,9 @@ function getAssetCandles(activeId: number, count = 150): Candle[] {
 
   // Minor tick wiggle on forming candle (with Gambol active manipulation injection)
   const activeCandle = state.candles[state.candles.length - 1];
-  const prec = asset.precision || 5;
-  const vol = state.basePrice > 1000 ? 0.8 : state.basePrice > 10 ? 0.02 : 0.00003;
+  const config = getAssetPriceConfig(activeId);
+  const prec = config.precision || asset.precision || 5;
+  const vol = config.volatility * 0.05;
   
   // Check if active manipulation is in progress
   const manip = getActiveManipulationFor(activeId);
@@ -409,27 +378,48 @@ app.post('/api/disconnect-ssid', (req, res) => {
   res.json({ ok: true, message: 'Desconectado da corretora' });
 });
 
+// Helper to safely synchronize real broker candles without price jumps or scale conflicts
+function syncExternalCandles(activeId: number, externalCandles: Candle[]): boolean {
+  if (!externalCandles || externalCandles.length < 10) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const currentMinute = Math.floor(now / 60) * 60;
+  const last = externalCandles[externalCandles.length - 1];
+
+  // Must be fresh (within 3 minutes of current time)
+  if (!last || last.time < currentMinute - 180 || last.time > currentMinute + 60) {
+    return false;
+  }
+
+  let state = assetStates.get(activeId);
+  if (!state) {
+    state = {
+      basePrice: last.close,
+      currentPrice: last.close,
+      candles: externalCandles,
+      lastCandleMinute: last.time,
+    };
+    assetStates.set(activeId, state);
+  } else {
+    // Synchronize candles and continuous live price
+    state.candles = externalCandles;
+    state.currentPrice = last.close;
+    state.lastCandleMinute = last.time;
+  }
+  return true;
+}
+
 // Candles
 app.get('/api/candles', async (req, res) => {
   const activeId = parseInt(req.query.activeId as string, 10) || 76;
   const count = parseInt(req.query.count as string, 10) || 150;
 
   try {
-    const gambolData = await fetchGambolCandles(activeId, count);
-    if (gambolData && gambolData.length >= 30) {
-      return res.json(gambolData);
-    }
-  } catch {
-    // continue to broker
-  }
-
-  try {
     const brokerData = await getBrokerCandles(activeId, count);
     if (brokerData && brokerData.length >= 30) {
-      return res.json(brokerData);
+      syncExternalCandles(activeId, brokerData);
     }
   } catch {
-    // Fallback to local continuous OTC engine
+    // Continue with unified asset engine
   }
 
   const candles = getAssetCandles(activeId, count);
@@ -439,18 +429,17 @@ app.get('/api/candles', async (req, res) => {
 // Technical Analysis
 app.get('/api/analysis', async (req, res) => {
   const activeId = parseInt(req.query.activeId as string, 10) || 76;
-  let candles: Candle[] = [];
 
   try {
-    candles = await getBrokerCandles(activeId, 180);
+    const brokerData = await getBrokerCandles(activeId, 180);
+    if (brokerData && brokerData.length >= 30) {
+      syncExternalCandles(activeId, brokerData);
+    }
   } catch {
     // fallback
   }
 
-  if (!candles || candles.length < 35) {
-    candles = getAssetCandles(activeId, 180);
-  }
-
+  const candles = getAssetCandles(activeId, 180);
   const closed = candles.slice(0, -1);
   const result = analyze(closed.length >= 35 ? closed : candles);
 
@@ -500,7 +489,7 @@ app.post('/api/execute-order', async (req, res) => {
     console.error(`[API /execute-order] Falha ao enviar para corretora:`, err?.message || err);
     // Simulated instant execution engine
     const candles = getAssetCandles(activeId, 10);
-    const lastPrice = candles[candles.length - 1]?.close || getInitialBasePrice(activeId, asset.category);
+    const lastPrice = candles[candles.length - 1]?.close || getAssetPriceConfig(activeId).basePrice;
 
     const order = {
       id: `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,

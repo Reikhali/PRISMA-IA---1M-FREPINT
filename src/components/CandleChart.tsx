@@ -118,8 +118,10 @@ export function CandleChart({
 
     // 2. ORDENAÇÃO E DEDUPLICAÇÃO DE VELAS (Evita timestamps invertidos ou duplicados)
     const sortedMap = new Map<number, CandlestickData>();
+    const lastC = candles[candles.length - 1];
     for (const c of candles) {
-      if (!c || isNaN(c.time) || isNaN(c.close)) continue;
+      if (!c || isNaN(c.time) || isNaN(c.close) || c.close <= 0) continue;
+      if (lastC && (c.close / lastC.close < 0.4 || c.close / lastC.close > 2.5)) continue;
       const timeSec = Math.floor(c.time) as UTCTimestamp;
       sortedMap.set(timeSec, {
         time: timeSec,
@@ -165,6 +167,34 @@ export function CandleChart({
     };
   }, [symbol, chartMode]);
 
+  // Atualiza dados do Lightweight Charts se novas velas completas chegarem
+  useEffect(() => {
+    if (chartMode !== 'tradingview' || !seriesRef.current || candles.length === 0) return;
+
+    const sortedMap = new Map<number, CandlestickData>();
+    const lastC = candles[candles.length - 1];
+    for (const c of candles) {
+      if (!c || isNaN(c.time) || isNaN(c.close) || c.close <= 0) continue;
+      if (lastC && (c.close / lastC.close < 0.4 || c.close / lastC.close > 2.5)) continue;
+      const timeSec = Math.floor(c.time) as UTCTimestamp;
+      sortedMap.set(timeSec, {
+        time: timeSec,
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+      });
+    }
+
+    const cleanData = Array.from(sortedMap.values()).sort(
+      (a, b) => (a.time as number) - (b.time as number)
+    );
+
+    if (cleanData.length > 0) {
+      seriesRef.current.setData(cleanData);
+    }
+  }, [candles, chartMode]);
+
   // 4. ATUALIZAÇÃO CIRÚRGICA EM TEMPO REAL VIA SSE (Sem recarregar o gráfico e sem resetar zoom)
   useEffect(() => {
     if (chartMode !== 'tradingview') return;
@@ -184,7 +214,7 @@ export function CandleChart({
           low: Number(c.low),
           close: Number(c.close),
         });
-      } catch (err) {
+      } catch {
         // ignora erros de parse pontuais
       }
     });
@@ -198,7 +228,17 @@ export function CandleChart({
   const candleCount = showFootprint ? 24 : 38;
   const displayCandles = useMemo(() => {
     if (!candles || candles.length === 0) return [];
-    return candles.slice(-candleCount);
+    const last = candles[candles.length - 1];
+    if (!last || isNaN(last.close) || last.close <= 0) return [];
+
+    // Filtra velas de escala inconsistente
+    const valid = candles.filter((c) => {
+      if (!c || isNaN(c.close) || isNaN(c.time) || c.close <= 0) return false;
+      const ratio = c.close / last.close;
+      return ratio > 0.4 && ratio < 2.5;
+    });
+
+    return valid.slice(-candleCount);
   }, [candles, candleCount]);
 
   // Compute Footprint Cluster data (Volume Profile by Candle, POC, Delta Imbalance & Top/Bottom Metrics)

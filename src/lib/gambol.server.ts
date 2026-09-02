@@ -102,7 +102,12 @@ export async function fetchGambolCandles(assetIdentifier: string | number, count
           .slice(-count);
 
         if (sortedCandles.length >= 10) {
-          return sortedCandles;
+          const nowSec = Math.floor(Date.now() / 1000);
+          const lastCandle = sortedCandles[sortedCandles.length - 1];
+          // Reject stale data older than 2 minutes or future-skewed
+          if (lastCandle && lastCandle.time >= nowSec - 180 && lastCandle.time <= nowSec + 60) {
+            return sortedCandles;
+          }
         }
       }
     }
