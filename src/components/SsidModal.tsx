@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   KeyRound,
   X,
@@ -12,10 +12,10 @@ import {
   Eye,
   EyeOff,
   UserCheck,
-  Zap,
+  Save,
+  Trash2,
 } from 'lucide-react';
 import type { AccountInfo } from '@/types';
-import { playClickSound } from '@/lib/sound';
 
 interface SsidModalProps {
   isOpen: boolean;
@@ -39,16 +39,56 @@ export function SsidModal({
   // Credentials Tab State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberCredentials, setRememberCredentials] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
 
   // SSID Tab State
   const [ssidInput, setSsidInput] = useState('');
+  const [rememberSsid, setRememberSsid] = useState(true);
 
   // General State
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
+  // Load saved credentials from localStorage on modal open
+  useEffect(() => {
+    if (isOpen) {
+      try {
+        const savedCreds = localStorage.getItem('optgo_saved_credentials');
+        if (savedCreds) {
+          const parsed = JSON.parse(savedCreds);
+          if (parsed?.email) setEmail(parsed.email);
+          if (parsed?.password) setPassword(parsed.password);
+          setRememberCredentials(true);
+        }
+
+        const savedSsid = localStorage.getItem('optgo_saved_ssid');
+        if (savedSsid) {
+          setSsidInput(savedSsid);
+          setRememberSsid(true);
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  // Clear saved credentials
+  const handleClearSavedCredentials = () => {
+    localStorage.removeItem('optgo_saved_credentials');
+    setEmail('');
+    setPassword('');
+    setFeedback({ ok: true, msg: 'Credenciais salvas foram apagadas.' });
+  };
+
+  // Clear saved SSID
+  const handleClearSavedSsid = () => {
+    localStorage.removeItem('optgo_saved_ssid');
+    setSsidInput('');
+    setFeedback({ ok: true, msg: 'SSID salvo foi apagado.' });
+  };
 
   // Handle Login via Email + Password
   const handleConnectCredentials = async (e: React.FormEvent) => {
@@ -58,12 +98,19 @@ export function SsidModal({
     setLoading(true);
     setFeedback(null);
     try {
+      if (rememberCredentials) {
+        localStorage.setItem(
+          'optgo_saved_credentials',
+          JSON.stringify({ email: email.trim(), password: password.trim() })
+        );
+      } else {
+        localStorage.removeItem('optgo_saved_credentials');
+      }
+
       if (onConnectCredentials) {
         const res = await onConnectCredentials(email.trim(), password.trim());
         if (res.ok) {
           setFeedback({ ok: true, msg: 'Conectado com sucesso à sua conta OPTGO!' });
-          setEmail('');
-          setPassword('');
         } else {
           setFeedback({ ok: false, msg: res.msg || 'Credenciais inválidas ou erro na corretora.' });
         }
@@ -83,10 +130,15 @@ export function SsidModal({
     setLoading(true);
     setFeedback(null);
     try {
+      if (rememberSsid) {
+        localStorage.setItem('optgo_saved_ssid', ssidInput.trim());
+      } else {
+        localStorage.removeItem('optgo_saved_ssid');
+      }
+
       const ok = await onConnectSsid(ssidInput.trim());
       if (ok) {
         setFeedback({ ok: true, msg: 'Sessão SSID sincronizada com sucesso!' });
-        setSsidInput('');
       } else {
         setFeedback({ ok: false, msg: 'Não foi possível conectar com esse SSID no momento.' });
       }
@@ -121,7 +173,7 @@ export function SsidModal({
               <h2 className="text-sm sm:text-base font-black text-white flex items-center gap-1.5 font-mono">
                 CONEXÃO <span className="text-emerald-400">OPTGO BROKER</span>
               </h2>
-              <p className="text-xs text-gray-400">Entre na sua conta para operar em tempo real</p>
+              <p className="text-xs text-gray-400">Conecte sua conta para operar em tempo real</p>
             </div>
           </div>
           <button
@@ -270,8 +322,36 @@ export function SsidModal({
                 </div>
               </div>
 
+              {/* Salvar Credenciais Checkbox & Clear */}
+              <div className="flex items-center justify-between pt-1">
+                <label className="flex items-center gap-2 cursor-pointer select-none text-gray-300 hover:text-white">
+                  <input
+                    type="checkbox"
+                    checked={rememberCredentials}
+                    onChange={(e) => setRememberCredentials(e.target.checked)}
+                    className="w-4 h-4 rounded bg-gray-900 border-gray-700 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-gray-900"
+                  />
+                  <span className="text-[11px] flex items-center gap-1">
+                    <Save className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Lembrar e salvar meus dados neste navegador</span>
+                  </span>
+                </label>
+
+                {(email || password) && (
+                  <button
+                    type="button"
+                    onClick={handleClearSavedCredentials}
+                    className="text-[10px] text-gray-500 hover:text-rose-400 flex items-center gap-1 transition-colors"
+                    title="Limpar campos e dados salvos"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Limpar</span>
+                  </button>
+                )}
+              </div>
+
               <p className="text-[10px] text-gray-500 leading-tight">
-                * Conexão criptografada diretamente com o gateway oficial da OPTGO Broker.
+                * Seus dados ficam salvos apenas localmente no seu próprio navegador de forma segura.
               </p>
 
               {feedback && (
@@ -301,7 +381,7 @@ export function SsidModal({
                 ) : (
                   <>
                     <UserCheck className="w-4 h-4" />
-                    <span>Conectar Minha Conta</span>
+                    <span>Conectar e Salvar Minha Conta</span>
                   </>
                 )}
               </button>
@@ -332,6 +412,34 @@ export function SsidModal({
                     onChange={(e) => setSsidInput(e.target.value)}
                     className="w-full px-3 py-2.5 bg-gray-950 border border-gray-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
                   />
+                </div>
+
+                {/* Salvar SSID Checkbox & Clear */}
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-gray-300 hover:text-white">
+                    <input
+                      type="checkbox"
+                      checked={rememberSsid}
+                      onChange={(e) => setRememberSsid(e.target.checked)}
+                      className="w-4 h-4 rounded bg-gray-900 border-gray-700 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-gray-900"
+                    />
+                    <span className="text-[11px] flex items-center gap-1">
+                      <Save className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Lembrar token SSID</span>
+                    </span>
+                  </label>
+
+                  {ssidInput && (
+                    <button
+                      type="button"
+                      onClick={handleClearSavedSsid}
+                      className="text-[10px] text-gray-500 hover:text-rose-400 flex items-center gap-1 transition-colors"
+                      title="Limpar SSID salvo"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Limpar</span>
+                    </button>
+                  )}
                 </div>
 
                 {feedback && (

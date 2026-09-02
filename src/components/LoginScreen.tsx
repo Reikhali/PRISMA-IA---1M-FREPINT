@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Lock, User, ShieldCheck, Activity, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Lock, User, ShieldCheck, Activity, Eye, EyeOff, AlertCircle, Save } from 'lucide-react';
 
 interface LoginScreenProps {
   onLoginSuccess: () => void;
@@ -8,9 +8,25 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [emailOrUser, setEmailOrUser] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Load saved credentials on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('prisma_saved_login');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.user) setEmailOrUser(parsed.user);
+        if (parsed?.pass) setPassword(parsed.pass);
+        setRememberMe(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,6 +45,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       const isValidPass = cleanPass === '70721472';
 
       if (isValidUser && isValidPass) {
+        // Salvar login se o checkbox estiver ativo
+        if (rememberMe) {
+          localStorage.setItem('prisma_saved_login', JSON.stringify({
+            user: emailOrUser.trim(),
+            pass: password.trim(),
+          }));
+        } else {
+          localStorage.removeItem('prisma_saved_login');
+        }
+
         localStorage.setItem('prisma_auth_session', JSON.stringify({
           authenticated: true,
           user: cleanUser,
@@ -171,11 +197,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               </div>
             </div>
 
+            {/* Checkbox Salvar Dados */}
+            <div className="flex items-center justify-between pt-1">
+              <label className="flex items-center gap-2 cursor-pointer select-none text-slate-400 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-slate-950"
+                />
+                <span className="text-xs flex items-center gap-1 font-mono">
+                  <Save className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Salvar dados de acesso</span>
+                </span>
+              </label>
+            </div>
+
             {/* Submit Button */}
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-black font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-70"
+              className="w-full mt-2 py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-black font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-70 font-mono"
             >
               {loading ? (
                 <>

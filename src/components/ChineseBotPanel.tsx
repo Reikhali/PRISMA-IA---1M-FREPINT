@@ -69,7 +69,7 @@ export function ChineseBotPanel({
   currentSorosLevel,
 }: ChineseBotPanelProps) {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1M');
-  const [selectedStrategyMode, setSelectedStrategyMode] = useState<StrategyMode>('footprint_orderflow');
+  const [selectedStrategyMode, setSelectedStrategyMode] = useState<StrategyMode>('manipulator_hunter');
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [orderAmount, setOrderAmount] = useState<number>(10);
   const [managementMode, setManagementMode] = useState<'fixed' | 'soros' | 'martingale'>('fixed');
@@ -82,6 +82,10 @@ export function ChineseBotPanel({
   const [analyzedSignal, setAnalyzedSignal] = useState<UnifiedSignalResult | null>(null);
   const [signalAnalyzedAt, setSignalAnalyzedAt] = useState<string | null>(null);
   const [signalNextEntryTime, setSignalNextEntryTime] = useState<string | null>(null);
+  const [signalEntryTimestamp, setSignalEntryTimestamp] = useState<number | null>(null);
+  const [signalExpireTimestamp, setSignalExpireTimestamp] = useState<number | null>(null);
+  const [signalLifecycleStatus, setSignalLifecycleStatus] = useState<'IDLE' | 'WAITING_ENTRY' | 'IN_TRADE' | 'FINISHED'>('IDLE');
+  const [lastFinishedSignalInfo, setLastFinishedSignalInfo] = useState<{ dir: string; time: string } | null>(null);
 
   // Auto-Fire on Next Candle birth (:58s / :00s)
   const [autoFireNextCandle, setAutoFireNextCandle] = useState<boolean>(true);
@@ -140,46 +144,6 @@ export function ChineseBotPanel({
   const nextCandleDate = new Date(currentTime.getTime() + (60 - currentTime.getSeconds()) * 1000);
   const nextEntryStr = formatBrtTime(nextCandleDate);
 
-  // Manual Trigger: User clicks "ANALISAR MERCADO AGORA"
-  const handleRescan = useCallback(() => {
-    playClickSound();
-    setIsScanning(true);
-    setScanStepText('1/3: Sincronizando com Horário Oficial de Brasília (UTC-3)...');
-
-    setTimeout(() => {
-      setScanStepText('2/3: Lendo Velas M1, Rejeição de Pavio e Médias da Corretora...');
-    }, 250);
-
-    setTimeout(() => {
-      setScanStepText(
-        selectedStrategyMode === 'footprint_orderflow'
-          ? '3/3: Calculando Clusters de Volume, POC, Delta e Zonas de Absorção...'
-          : selectedStrategyMode === 'hybrid_confluence'
-            ? '3/3: Calculando Confluência Total (PRISMA 3 Votos + QUOTEXHACK Flow)...'
-            : selectedStrategyMode === 'quotex_hack'
-              ? '3/3: Calculando QUOTEXHACK (Pavio + Suporte/Resistência + Timing :58s)...'
-              : '3/3: Calculando Confluência EMA 9/21 + RSI 14 + Filtro ATR...'
-      );
-    }, 500);
-
-    setTimeout(() => {
-      setIsScanning(false);
-      setScanStepText('');
-
-      // Evaluate analysis on closed candles for maximum precision
-      const evaluation = evaluateMarketSignal(candles, selectedTimeframe, selectedStrategyMode);
-      setAnalyzedSignal(evaluation);
-      setSignalAnalyzedAt(formatBrtTime(new Date()));
-
-      const nextEntry = new Date(Date.now() + (60 - new Date().getSeconds()) * 1000);
-      setSignalNextEntryTime(formatBrtTime(nextEntry));
-
-      if (evaluation.verdict !== 'NO_TRADE') {
-        playSignalTriggerSound(evaluation.verdict === 'CALL' ? 'call' : 'put');
-      }
-    }, 750);
-  }, [candles, selectedTimeframe, selectedStrategyMode, formatBrtTime]);
-
   // Calculate dynamic stake amount based on Management Mode
   const effectiveStake = React.useMemo(() => {
     if (managementMode === 'soros') {
@@ -201,8 +165,123 @@ export function ChineseBotPanel({
 
   effectiveStakeRef.current = effectiveStake;
 
-  // Seconds remaining until the next candle opens (:00s)
+  // Clear signal when asset changes to avoid confusion
+  useEffect(() => {
+    setAnalyzedSignal(null);
+    setSignalLifecycleStatus('IDLE');
+    setSignalEntryTimestamp(null);
+    setSignalExpireTimestamp(null);
+  }, [selectedAsset.id]);
+
+  // Manual Trigger: User clicks "ANALISAR MERCADO AGORA"
+  const handleRescan = useCallback(() => {
+    playClickSound();
+    setIsScanning(true);
+    setLastFinishedSignalInfo(null);
+    setScanStepText('1/3: Sincronizando com Horário Oficial de Brasília (UTC-3)...');
+
+    setTimeout(() => {
+      setScanStepText('2/3: Lendo Velas M1, Rejeição de Pavio e Linha da POC da Corretora...');
+    }, 250);
+
+    setTimeout(() => {
+      setScanStepText(
+        selectedStrategyMode === 'manipulator_hunter'
+          ? '3/3: Rastreador de Manipulador (Stop Hunt, Falso Rompimento e Absorção de Liquidez)...'
+          : selectedStrategyMode === 'full_confluence'
+            ? '3/3: Confluência Suprema de 5 Motores (Manipulador + POC + Footprint + QX + Prisma)...'
+            : selectedStrategyMode === 'poc_volume_profile'
+              ? '3/3: Calculando Blocos de Volume Profile, Nível Amarelo da POC e Reteste...'
+              : selectedStrategyMode === 'footprint_orderflow'
+                ? '3/3: Calculando Clusters de Volume, POC, Delta e Zonas de Absorção...'
+                : selectedStrategyMode === 'hybrid_confluence'
+                  ? '3/3: Calculando Confluência Total (POC + PRISMA 3 Votos + QUOTEXHACK)...'
+                  : selectedStrategyMode === 'quotex_hack'
+                    ? '3/3: Calculando QUOTEXHACK (Pavio + Suporte/Resistência + Timing :58s)...'
+                    : '3/3: Calculando Confluência EMA 9/21 + RSI 14 + Filtro ATR...'
+      );
+    }, 500);
+
+    setTimeout(() => {
+      setIsScanning(false);
+      setScanStepText('');
+
+      const now = new Date();
+      const currentSeconds = now.getSeconds();
+      const secondsToEntry = 60 - currentSeconds;
+      const entryTimestamp = now.getTime() + secondsToEntry * 1000;
+      const expireTimestamp = entryTimestamp + 60 * 1000; // 1M timeframe candle expiration
+
+      // Evaluate analysis on closed candles for maximum precision
+      const evaluation = evaluateMarketSignal(candles, selectedTimeframe, selectedStrategyMode);
+      setAnalyzedSignal(evaluation);
+      setSignalAnalyzedAt(formatBrtTime(now));
+
+      const nextEntryDate = new Date(entryTimestamp);
+      setSignalNextEntryTime(formatBrtTime(nextEntryDate));
+      setSignalEntryTimestamp(entryTimestamp);
+      setSignalExpireTimestamp(expireTimestamp);
+
+      if (evaluation.verdict !== 'NO_TRADE') {
+        setSignalLifecycleStatus('WAITING_ENTRY');
+        playSignalTriggerSound(evaluation.verdict === 'CALL' ? 'call' : 'put');
+      } else {
+        setSignalLifecycleStatus('IDLE');
+      }
+    }, 750);
+  }, [candles, selectedTimeframe, selectedStrategyMode, formatBrtTime]);
+
+  // Reset Signal manually
+  const handleClearSignal = useCallback(() => {
+    playClickSound();
+    setAnalyzedSignal(null);
+    setSignalLifecycleStatus('IDLE');
+    setSignalEntryTimestamp(null);
+    setSignalExpireTimestamp(null);
+  }, []);
+
+  // Seconds remaining calculations
+  const nowMs = currentTime.getTime();
   const secondsToNextCandle = 60 - currentTime.getSeconds();
+  const secondsToEntryCandle = signalEntryTimestamp
+    ? Math.max(0, Math.ceil((signalEntryTimestamp - nowMs) / 1000))
+    : secondsToNextCandle;
+  const secondsToTradeFinish = signalExpireTimestamp
+    ? Math.max(0, Math.ceil((signalExpireTimestamp - nowMs) / 1000))
+    : 0;
+
+  // Signal Lifecycle Timer & Auto-Reset when entered candle closes
+  useEffect(() => {
+    if (!analyzedSignal || analyzedSignal.verdict === 'NO_TRADE' || !signalEntryTimestamp || !signalExpireTimestamp) {
+      return;
+    }
+
+    const now = Date.now();
+
+    // 1. If we are before the entry timestamp: WAITING_ENTRY
+    if (now < signalEntryTimestamp) {
+      if (signalLifecycleStatus !== 'WAITING_ENTRY') {
+        setSignalLifecycleStatus('WAITING_ENTRY');
+      }
+    }
+    // 2. If we are within the trade candle (between entry and expiration): IN_TRADE
+    else if (now >= signalEntryTimestamp && now < signalExpireTimestamp) {
+      if (signalLifecycleStatus !== 'IN_TRADE') {
+        setSignalLifecycleStatus('IN_TRADE');
+      }
+    }
+    // 3. When the entered candle FINISHES (now >= signalExpireTimestamp): RESET SIGNAL!
+    else if (now >= signalExpireTimestamp) {
+      setLastFinishedSignalInfo({
+        dir: analyzedSignal.verdictWord,
+        time: formatBrtTime(new Date(signalExpireTimestamp)),
+      });
+      setSignalLifecycleStatus('FINISHED');
+      setAnalyzedSignal(null);
+      setSignalEntryTimestamp(null);
+      setSignalExpireTimestamp(null);
+    }
+  }, [currentTime, analyzedSignal, signalEntryTimestamp, signalExpireTimestamp, signalLifecycleStatus, formatBrtTime]);
 
   // High-Precision Broker Execution Engine (matching IQ Option / Bullex API WebSocket timing)
   useEffect(() => {
@@ -218,8 +297,18 @@ export function ChineseBotPanel({
         setAnalyzedSignal(evaluation);
         setSignalAnalyzedAt(formatBrtTime(now));
 
-        const nextEntry = new Date(Date.now() + 2000);
+        const secondsToEntry = 60 - sec;
+        const entryTimestamp = now.getTime() + (secondsToEntry <= 0 ? 60 : secondsToEntry) * 1000;
+        const expireTimestamp = entryTimestamp + 60 * 1000;
+
+        const nextEntry = new Date(entryTimestamp);
         setSignalNextEntryTime(formatBrtTime(nextEntry));
+        setSignalEntryTimestamp(entryTimestamp);
+        setSignalExpireTimestamp(expireTimestamp);
+
+        if (evaluation.verdict !== 'NO_TRADE') {
+          setSignalLifecycleStatus('WAITING_ENTRY');
+        }
       }
 
       // 2. Automated Trade Execution at Candle Birth (:59s - :00s)
@@ -237,16 +326,23 @@ export function ChineseBotPanel({
           playSignalTriggerSound(dir);
 
           const stratLabel =
-            selectedStrategyModeRef.current === 'footprint_orderflow'
-              ? `ORDER_FLOW_FOOTPRINT (${currentSig.verdictWord})`
-              : selectedStrategyModeRef.current === 'hybrid_confluence'
-                ? `CONFLUENCIA_HIBRIDA_QX (${currentSig.verdictWord})`
-                : selectedStrategyModeRef.current === 'quotex_hack'
-                  ? `QUOTEXHACK_ALGO (${currentSig.verdictWord})`
-                  : `PRISMA_VECTOR_3VOTOS (${currentSig.verdictWord})`;
+            selectedStrategyModeRef.current === 'manipulator_hunter'
+              ? `MANIPULATOR_TRAP_HUNTER (${currentSig.verdictWord})`
+              : selectedStrategyModeRef.current === 'full_confluence'
+                ? `CONFLUENCIA_5_MOTORES (${currentSig.verdictWord})`
+                : selectedStrategyModeRef.current === 'poc_volume_profile'
+                  ? `POC_VOLUME_PROFILE (${currentSig.verdictWord})`
+                  : selectedStrategyModeRef.current === 'footprint_orderflow'
+                    ? `ORDER_FLOW_FOOTPRINT (${currentSig.verdictWord})`
+                    : selectedStrategyModeRef.current === 'hybrid_confluence'
+                      ? `CONFLUENCIA_HIBRIDA_QX (${currentSig.verdictWord})`
+                      : selectedStrategyModeRef.current === 'quotex_hack'
+                        ? `QUOTEXHACK_ALGO (${currentSig.verdictWord})`
+                        : `PRISMA_VECTOR_3VOTOS (${currentSig.verdictWord})`;
 
           onExecuteOrderRef.current(dir, effectiveStakeRef.current, stratLabel);
           setLastExecutedCandleTime(formatBrtTime(now));
+          setSignalLifecycleStatus('IN_TRADE');
         }
       }
     }, 200);
@@ -264,13 +360,19 @@ export function ChineseBotPanel({
     const dir = analyzedSignal.verdict === 'CALL' ? 'call' : 'put';
     playSignalTriggerSound(dir);
     const stratLabel =
-      selectedStrategyMode === 'footprint_orderflow'
-        ? `ORDER FLOW FOOTPRINT (${analyzedSignal.verdictWord})`
-        : selectedStrategyMode === 'hybrid_confluence'
-          ? `CONFLUÊNCIA HÍBRIDA (PRISMA + QX) (${analyzedSignal.verdictWord})`
-          : selectedStrategyMode === 'quotex_hack'
-            ? `QUOTEXHACK ALGO (${analyzedSignal.verdictWord})`
-            : `PRISMA IA VECTOR (${analyzedSignal.verdictWord})`;
+      selectedStrategyMode === 'manipulator_hunter'
+        ? `MANIPULADOR TRAP HUNTER (${analyzedSignal.verdictWord})`
+        : selectedStrategyMode === 'full_confluence'
+          ? `CONFLUÊNCIA 5 MOTORES (${analyzedSignal.verdictWord})`
+          : selectedStrategyMode === 'poc_volume_profile'
+            ? `POC & VOLUME PROFILE (${analyzedSignal.verdictWord})`
+            : selectedStrategyMode === 'footprint_orderflow'
+              ? `ORDER FLOW FOOTPRINT (${analyzedSignal.verdictWord})`
+              : selectedStrategyMode === 'hybrid_confluence'
+                ? `CONFLUÊNCIA HÍBRIDA (PRISMA + QX) (${analyzedSignal.verdictWord})`
+                : selectedStrategyMode === 'quotex_hack'
+                  ? `QUOTEXHACK ALGO (${analyzedSignal.verdictWord})`
+                  : `PRISMA IA VECTOR (${analyzedSignal.verdictWord})`;
     await onExecuteOrder(dir, effectiveStake, stratLabel);
   };
 
@@ -523,7 +625,7 @@ export function ChineseBotPanel({
             </div>
           </div>
 
-          {/* Step 4: Strategy Mode Selection (PRISMA + FOOTPRINT + QUOTEXHACK) */}
+          {/* Step 4: Strategy Mode Selection (POC + FOOTPRINT + HÍBRIDO + QUOTEXHACK + PRISMA) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -533,18 +635,93 @@ export function ChineseBotPanel({
                 <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Estratégia de Sinal</span>
               </div>
               <span className="text-[10px] font-mono uppercase bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 border border-emerald-500/40 font-bold">
-                {selectedStrategyMode === 'footprint_orderflow'
-                  ? 'ORDER FLOW CLUSTER'
-                  : selectedStrategyMode === 'hybrid_confluence'
-                    ? '98% CONFLUÊNCIA'
-                    : selectedStrategyMode === 'quotex_hack'
-                      ? 'QUOTEXHACK ALGO'
-                      : 'PRISMA 3 VOTOS'}
+                {selectedStrategyMode === 'manipulator_hunter'
+                  ? '🕵️ DETECTOR DE MANIPULADOR'
+                  : selectedStrategyMode === 'full_confluence'
+                    ? '⚡ CONFLUÊNCIA SUPREMA (5 MOTORES)'
+                    : selectedStrategyMode === 'poc_volume_profile'
+                      ? 'POC & VOLUME PROFILE'
+                      : selectedStrategyMode === 'footprint_orderflow'
+                        ? 'ORDER FLOW CLUSTER'
+                        : selectedStrategyMode === 'hybrid_confluence'
+                          ? '98% CONFLUÊNCIA'
+                          : selectedStrategyMode === 'quotex_hack'
+                            ? 'QUOTEXHACK ALGO'
+                            : 'PRISMA 3 VOTOS'}
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-              {/* Option 1: Footprint Order Flow (NOVO - Conforme imagem do usuário) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2">
+              {/* Option 1: DETECTOR DE MANIPULADOR */}
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound();
+                  setSelectedStrategyMode('manipulator_hunter');
+                  setAnalyzedSignal(null);
+                }}
+                className={`p-2.5 rounded-xl text-left border transition-all ${
+                  selectedStrategyMode === 'manipulator_hunter'
+                    ? 'bg-purple-500/25 border-purple-400 shadow-md shadow-purple-500/25'
+                    : 'bg-[#020509]/80 border-white/10 hover:border-purple-500/40'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold font-mono text-purple-300">🕵️ MANIPULADOR</span>
+                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-400 text-black font-black">TRAP M1</span>
+                </div>
+                <p className="text-[10px] text-slate-300 font-mono leading-tight">
+                  Stop Hunt, Falso Rompimento e Trap de Liquidez
+                </p>
+              </button>
+
+              {/* Option 2: CONFLUÊNCIA SUPREMA (5 Motores) */}
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound();
+                  setSelectedStrategyMode('full_confluence');
+                  setAnalyzedSignal(null);
+                }}
+                className={`p-2.5 rounded-xl text-left border transition-all ${
+                  selectedStrategyMode === 'full_confluence'
+                    ? 'bg-emerald-500/25 border-emerald-400 shadow-md shadow-emerald-500/25'
+                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/40'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold font-mono text-emerald-300">⚡ 5 MOTORES</span>
+                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">99% CONFL</span>
+                </div>
+                <p className="text-[10px] text-slate-300 font-mono leading-tight">
+                  Manipulador + POC + Footprint + QuotexHack + Prisma IA
+                </p>
+              </button>
+
+              {/* Option 3: POC & Volume Profile */}
+              <button
+                type="button"
+                onClick={() => {
+                  playClickSound();
+                  setSelectedStrategyMode('poc_volume_profile');
+                  setAnalyzedSignal(null);
+                }}
+                className={`p-2.5 rounded-xl text-left border transition-all ${
+                  selectedStrategyMode === 'poc_volume_profile'
+                    ? 'bg-amber-500/20 border-amber-400 shadow-md shadow-amber-500/20'
+                    : 'bg-[#020509]/80 border-white/10 hover:border-amber-500/30'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold font-mono text-amber-400">🟡 POC & PERFIL</span>
+                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-400 text-black font-black">M1 FOTO</span>
+                </div>
+                <p className="text-[10px] text-slate-300 font-mono leading-tight">
+                  Reteste na Linha Amarela da POC + Blocos de Volume
+                </p>
+              </button>
+
+              {/* Option 4: Footprint Order Flow */}
               <button
                 type="button"
                 onClick={() => {
@@ -559,38 +736,15 @@ export function ChineseBotPanel({
                 }`}
               >
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">📊 ORDER FLOW FOOTPRINT</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">AO VIVO</span>
+                  <span className="text-xs font-bold font-mono text-emerald-400">📊 ORDER FLOW</span>
+                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">CLUSTERS</span>
                 </div>
                 <p className="text-[10px] text-slate-300 font-mono leading-tight">
                   Clusters de Volume + Zonas de Absorção (Caixas Brancas)
                 </p>
               </button>
 
-              {/* Option 2: Confluência Total */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('hybrid_confluence');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-2.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'hybrid_confluence'
-                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/30'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">⚡ HÍBRIDO (CONFLUÊNCIA)</span>
-                  <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-400 text-black font-black">98%</span>
-                </div>
-                <p className="text-[10px] text-slate-300 font-mono leading-tight">
-                  PRISMA 3 Votos + QUOTEXHACK Pavio e Flow
-                </p>
-              </button>
-
-              {/* Option 3: QuotexHack Algo */}
+              {/* Option 5: QuotexHack Algo */}
               <button
                 type="button"
                 onClick={() => {
@@ -605,7 +759,7 @@ export function ChineseBotPanel({
                 }`}
               >
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold font-mono text-emerald-400">🎯 QUOTEXHACK ALGO</span>
+                  <span className="text-xs font-bold font-mono text-emerald-400">🎯 QUOTEXHACK</span>
                   <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">M1 :58s</span>
                 </div>
                 <p className="text-[10px] text-slate-300 font-mono leading-tight">
@@ -613,7 +767,7 @@ export function ChineseBotPanel({
                 </p>
               </button>
 
-              {/* Option 4: Prisma Vector 3 Votos */}
+              {/* Option 6: Prisma Vector 3 Votos */}
               <button
                 type="button"
                 onClick={() => {
@@ -755,17 +909,51 @@ export function ChineseBotPanel({
                 </div>
               </div>
             ) : analyzedSignal ? (
-              /* Analyzed Verdict Display (Locked & Firm until next deliberate scan or robot trigger) */
+              /* Analyzed Verdict Display (Active only while waiting for entry and during the entered candle) */
               <div className="py-3 space-y-4">
-                {/* Time Synchronization Badge */}
-                <div className="bg-[#020509]/90 border border-emerald-500/25 rounded-xl p-2.5 flex items-center justify-between font-mono text-xs">
-                  <div className="flex items-center gap-2 text-slate-300">
-                    <Clock className="w-4 h-4 text-emerald-400" />
-                    <span>Próxima Entrada:</span>
-                    <strong className="text-white text-sm">{signalNextEntryTime || nextEntryStr}</strong>
+                {/* Signal Timing & Lifecycle Status Bar */}
+                <div className={`border rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 font-mono text-xs ${
+                  signalLifecycleStatus === 'IN_TRADE'
+                    ? 'bg-amber-950/40 border-amber-500/50 shadow-lg shadow-amber-950/30'
+                    : 'bg-[#020509]/90 border-emerald-500/30'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <Clock className={`w-4 h-4 ${signalLifecycleStatus === 'IN_TRADE' ? 'text-amber-400 animate-spin' : 'text-emerald-400 animate-pulse'}`} />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-slate-300 font-bold">
+                          {signalLifecycleStatus === 'IN_TRADE' ? 'EM OPERAÇÃO NA VELA:' : 'ENTRADA NA PRÓXIMA VELA:'}
+                        </span>
+                        <strong className="text-white text-sm bg-black/60 px-2 py-0.5 rounded border border-white/10">
+                          {signalNextEntryTime || nextEntryStr}
+                        </strong>
+                      </div>
+                      <span className="text-[10px] text-slate-400">
+                        {signalLifecycleStatus === 'IN_TRADE'
+                          ? `⚡ Vela ativa! O sinal sumirá automaticamente em ${secondsToTradeFinish}s`
+                          : `⏳ Prepare sua entrada para a virada de vela em ${secondsToEntryCandle}s`}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
-                    <span>Expiração: 1 Minuto ({selectedTimeframe})</span>
+
+                  <div className="flex items-center gap-2">
+                    <div className={`px-2.5 py-1 rounded-md text-[11px] font-mono font-black uppercase flex items-center gap-1.5 ${
+                      signalLifecycleStatus === 'IN_TRADE'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
+                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    }`}>
+                      <span className={`w-2 h-2 rounded-full ${signalLifecycleStatus === 'IN_TRADE' ? 'bg-amber-400' : 'bg-emerald-400'} animate-ping`} />
+                      <span>{signalLifecycleStatus === 'IN_TRADE' ? `NA VELA (${secondsToTradeFinish}s)` : `ARMADO (${secondsToEntryCandle}s)`}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleClearSignal}
+                      title="Resetar Sinal Agora"
+                      className="px-2 py-1 rounded bg-slate-900 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-white/10 hover:border-rose-500/40 text-[10px] font-mono transition-all"
+                    >
+                      Resetar
+                    </button>
                   </div>
                 </div>
 
@@ -812,6 +1000,16 @@ export function ChineseBotPanel({
                   <span className="text-xs font-mono font-bold uppercase tracking-widest text-slate-300 mt-1">
                     {analyzedSignal.verdictSub}
                   </span>
+
+                  {/* Auto-Reset Countdown Notice */}
+                  <div className="mt-3 px-3 py-1 rounded-full bg-black/60 border border-white/10 text-[11px] font-mono text-slate-300 flex items-center gap-1.5">
+                    <span className="text-amber-400">ℹ️</span>
+                    <span>
+                      {signalLifecycleStatus === 'IN_TRADE'
+                        ? `Vela em andamento: encerra e reseta o sinal em ${secondsToTradeFinish}s`
+                        : `Sinal ativo para a vela das ${signalNextEntryTime || nextEntryStr} (${secondsToEntryCandle}s para entrada)`}
+                    </span>
+                  </div>
                 </div>
 
                 {/* AI Confidence Bar */}
@@ -990,19 +1188,34 @@ export function ChineseBotPanel({
             ) : (
               /* Idle / Awaiting Analysis Prompt */
               <div className="py-10 flex flex-col items-center justify-center text-center space-y-4">
+                {lastFinishedSignalInfo ? (
+                  <div className="w-full bg-emerald-950/40 border border-emerald-500/40 p-3.5 rounded-xl text-left font-mono space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        <span>Sinal Anterior Finalizado com Sucesso</span>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Vela das {lastFinishedSignalInfo.time}</span>
+                    </div>
+                    <p className="text-xs text-slate-300">
+                      A vela da operação <strong className="text-white">({lastFinishedSignalInfo.dir})</strong> encerrou. O painel resetou para você não se confundir.
+                    </p>
+                  </div>
+                ) : null}
+
                 <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shadow-lg">
                   <Zap className="w-8 h-8 fill-emerald-400/20 text-emerald-400" />
                 </div>
                 <div className="max-w-sm space-y-1">
-                  <h3 className="text-base font-black text-white font-mono">Aguardando Análise do Ativo</h3>
+                  <h3 className="text-base font-black text-white font-mono">Scanner Pronto · Aguardando Gatilho</h3>
                   <p className="text-xs text-slate-400 font-mono">
-                    Clique no botão abaixo para escanear as velas M1 do ativo <strong>{selectedAsset.label}</strong> com os 3 Votos de Confluência.
+                    Clique no botão abaixo ou ative o Robô Vector para gerar o sinal de entrada na próxima vela de <strong>{selectedAsset.label}</strong>.
                   </p>
                 </div>
                 <button
                   type="button"
                   onClick={handleRescan}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-black font-mono font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all"
+                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-black font-mono font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all cursor-pointer"
                 >
                   <Zap className="w-4 h-4 fill-black" />
                   <span>ANALISAR {selectedAsset.label} AGORA</span>
@@ -1068,18 +1281,22 @@ export function ChineseBotPanel({
                 </div>
               </div>
 
-              {/* Next Candle Auto-Fire Status Banner */}
+              {/* Next Candle Auto-Fire & Trade Lifecycle Status Banner */}
               {analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE' && (
                 <div className="bg-[#040c14] border border-emerald-500/40 rounded-xl p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Clock className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      <Clock className={`w-4 h-4 ${signalLifecycleStatus === 'IN_TRADE' ? 'text-amber-400 animate-spin' : 'text-emerald-400 animate-pulse'}`} />
                       <span className="text-xs font-mono font-bold text-white uppercase">
-                        Gatilho de Execução na Próxima Vela
+                        {signalLifecycleStatus === 'IN_TRADE' ? 'Vela da Operação em Andamento' : 'Gatilho de Execução na Próxima Vela'}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                      Entrada às {nextEntryStr}
+                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
+                      signalLifecycleStatus === 'IN_TRADE'
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    }`}>
+                      {signalLifecycleStatus === 'IN_TRADE' ? `Vela das ${signalNextEntryTime || nextEntryStr}` : `Entrada às ${signalNextEntryTime || nextEntryStr}`}
                     </span>
                   </div>
 
@@ -1105,24 +1322,36 @@ export function ChineseBotPanel({
 
                     <div className="text-right">
                       <span className="text-[11px] font-mono text-slate-300">
-                        {autoFireNextCandle ? (
+                        {signalLifecycleStatus === 'IN_TRADE' ? (
+                          <span className="text-amber-400 font-bold">
+                            ⚡ Encerramento da vela em <strong className="text-white text-xs">{secondsToTradeFinish}s</strong>
+                          </span>
+                        ) : autoFireNextCandle ? (
                           <span className="text-emerald-400 font-bold">
-                            ⏳ Dispara automaticamente em <strong className="text-white text-xs">{secondsToNextCandle}s</strong>
+                            ⏳ Disparo da entrada em <strong className="text-white text-xs">{secondsToEntryCandle}s</strong>
                           </span>
                         ) : (
-                          <span className="text-slate-400">Aguardando clique manual</span>
+                          <span className="text-slate-400">Aguardando entrada manual</span>
                         )}
                       </span>
                     </div>
                   </div>
 
-                  {/* Visual Progress Bar to Next Candle */}
+                  {/* Visual Progress Bar to Next Candle / Expiration */}
                   <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
                     <div
                       className={`h-full transition-all duration-300 ${
-                        analyzedSignal.verdict === 'CALL' ? 'bg-emerald-400' : 'bg-rose-400'
+                        signalLifecycleStatus === 'IN_TRADE'
+                          ? 'bg-amber-400'
+                          : analyzedSignal.verdict === 'CALL'
+                            ? 'bg-emerald-400'
+                            : 'bg-rose-400'
                       }`}
-                      style={{ width: `${((60 - secondsToNextCandle) / 60) * 100}%` }}
+                      style={{
+                        width: signalLifecycleStatus === 'IN_TRADE'
+                          ? `${((60 - secondsToTradeFinish) / 60) * 100}%`
+                          : `${((60 - secondsToEntryCandle) / 60) * 100}%`,
+                      }}
                     />
                   </div>
 

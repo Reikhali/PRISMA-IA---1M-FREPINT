@@ -8,7 +8,13 @@ import {
   UTCTimestamp,
   CandlestickSeries,
 } from 'lightweight-charts';
-import { Layers, Eye, Zap, Sparkles, Filter, Activity, BarChart2, CheckCircle2 } from 'lucide-react';
+import { Layers, Eye, Zap, Sparkles, Filter, Activity, BarChart2, CheckCircle2, ShieldAlert } from 'lucide-react';
+import {
+  computeSessionVolumeProfiles,
+  computeManipulatorMarkers,
+  type SessionVolumeProfileBlock,
+  type ManipulatorMarker,
+} from '@/lib/footprint-engine';
 
 interface CandleChartProps {
   candles: Candle[];
@@ -61,8 +67,11 @@ export function CandleChart({
 }: CandleChartProps) {
   const [chartMode, setChartMode] = useState<'footprint' | 'tradingview'>('footprint');
   const [hoveredCandle, setHoveredCandle] = useState<Candle | null>(null);
+  const [showVolumeProfile, setShowVolumeProfile] = useState<boolean>(true);
+  const [showPocLine, setShowPocLine] = useState<boolean>(true);
   const [showFootprint, setShowFootprint] = useState<boolean>(true);
   const [showZones, setShowZones] = useState<boolean>(true);
+  const [showManipulator, setShowManipulator] = useState<boolean>(true);
   const [showWatermark, setShowWatermark] = useState<boolean>(true);
 
   // ─── LIGHTWEIGHT CHARTS REF ───────────────────────────────────────────────
@@ -371,6 +380,18 @@ export function CandleChart({
     return zones;
   }, [displayCandles, footprintData]);
 
+  // Compute Session Volume Profile Blocks (como na imagem: blocos cinzas com barras de volume e linha amarela da POC)
+  const volumeProfileBlocks = useMemo(() => {
+    if (!displayCandles || displayCandles.length < 3) return [];
+    return computeSessionVolumeProfiles(displayCandles, 8);
+  }, [displayCandles]);
+
+  // Compute Manipulator Liquidity Hunt Markers
+  const manipulatorMarkers = useMemo(() => {
+    if (!displayCandles || displayCandles.length < 4) return [];
+    return computeManipulatorMarkers(displayCandles);
+  }, [displayCandles]);
+
   // SVG Chart Geometry
   const W = 1120;
   const H = 480;
@@ -477,6 +498,19 @@ export function CandleChart({
             <>
               <button
                 type="button"
+                onClick={() => setShowVolumeProfile(!showVolumeProfile)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border flex items-center gap-1 ${
+                  showVolumeProfile
+                    ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-sm'
+                    : 'bg-black/40 border-white/10 text-slate-400'
+                }`}
+              >
+                <span>🟡 POC & Perfil:</span>
+                <span>{showVolumeProfile ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setShowFootprint(!showFootprint)}
                 className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border ${
                   showFootprint
@@ -485,6 +519,19 @@ export function CandleChart({
                 }`}
               >
                 Clusters: {showFootprint ? 'ON' : 'OFF'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowManipulator(!showManipulator)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border flex items-center gap-1 ${
+                  showManipulator
+                    ? 'bg-purple-500/20 border-purple-500/50 text-purple-300 shadow-sm'
+                    : 'bg-black/40 border-white/10 text-slate-400'
+                }`}
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-purple-400" />
+                <span>🕵️ Manipulador: {showManipulator ? 'ON' : 'OFF'}</span>
               </button>
 
               <button
@@ -575,6 +622,119 @@ export function CandleChart({
                 </text>
               </g>
             )}
+
+            {/* Session Volume Profile Blocks & POC Yellow Lines (Indicador da Foto: Blocos cinzas com barras horizontais e linha amarela) */}
+            {showVolumeProfile &&
+              volumeProfileBlocks.map((blk) => {
+                const xStart = toX(blk.startIndex) - candleW / 2 - 3;
+                const xEnd = toX(blk.endIndex) + candleW / 2 + 3;
+                const blockW = Math.max(30, xEnd - xStart);
+                const yTop = toY(blk.maxPrice);
+                const yBot = toY(blk.minPrice);
+                const blockH = Math.max(12, Math.abs(yBot - yTop));
+                const yPoc = toY(blk.pocPrice);
+
+                const maxLvlVol = Math.max(...blk.levels.map((l) => l.totalVolume), 1);
+
+                return (
+                  <g key={blk.id}>
+                    {/* Bloco de Fundo Cinza Translúcido da Sessão (como na imagem) */}
+                    <rect
+                      x={xStart}
+                      y={Math.min(yTop, yBot)}
+                      width={blockW}
+                      height={blockH}
+                      fill="#1e293b"
+                      fillOpacity="0.35"
+                      stroke="rgba(255, 255, 255, 0.12)"
+                      strokeWidth="1"
+                      rx="4"
+                    />
+
+                    {/* Barras Horizontais de Volume de Compra (Verde) e Venda (Vermelha) */}
+                    {blk.levels.map((lvl, lIdx) => {
+                      const lvlY = toY(lvl.price);
+                      const barMaxW = blockW * 0.42;
+                      const buyW = (lvl.buyVolume / maxLvlVol) * barMaxW;
+                      const sellW = (lvl.sellVolume / maxLvlVol) * barMaxW;
+
+                      return (
+                        <g key={`vp-lvl-${lIdx}`}>
+                          {/* Barra de Compra (Verde) */}
+                          <rect
+                            x={xStart + 3}
+                            y={lvlY - 2}
+                            width={Math.max(1, buyW)}
+                            height="4"
+                            fill="#10b981"
+                            fillOpacity="0.75"
+                            rx="1"
+                          />
+                          {/* Barra de Venda (Vermelha) */}
+                          <rect
+                            x={xStart + 3 + buyW}
+                            y={lvlY - 2}
+                            width={Math.max(1, sellW)}
+                            height="4"
+                            fill="#ef4444"
+                            fillOpacity="0.75"
+                            rx="1"
+                          />
+                        </g>
+                      );
+                    })}
+
+                    {/* LINHA AMARELA DA POC (Point of Control) - Como na foto */}
+                    {showPocLine && (
+                      <g>
+                        {/* Linha Principal Amarela Grossa */}
+                        <line
+                          x1={xStart}
+                          y1={yPoc}
+                          x2={xEnd}
+                          y2={yPoc}
+                          stroke="#facc15"
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                        />
+                        {/* Extensão Tracejada da POC */}
+                        <line
+                          x1={xEnd}
+                          y1={yPoc}
+                          x2={Math.min(W - PAD.right, xEnd + 35)}
+                          y2={yPoc}
+                          stroke="#facc15"
+                          strokeWidth="1.5"
+                          strokeDasharray="3,3"
+                          opacity="0.8"
+                        />
+                        {/* Tag de Preço da POC */}
+                        <rect
+                          x={xStart + 3}
+                          y={yPoc - 7}
+                          width="58"
+                          height="14"
+                          rx="3"
+                          fill="#78350f"
+                          fillOpacity="0.95"
+                          stroke="#facc15"
+                          strokeWidth="1"
+                        />
+                        <text
+                          x={xStart + 6}
+                          y={yPoc + 3}
+                          fill="#fef08a"
+                          fontSize="7.5"
+                          fontWeight="900"
+                          fontFamily="monospace"
+                        >
+                          POC {blk.pocPrice.toFixed(precision >= 5 ? 5 : precision)}
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
 
             {/* Horizontal Imbalance / Absorption Zones (White rectangular boxes) */}
             {showZones &&
@@ -794,6 +954,122 @@ export function CandleChart({
                 </g>
               );
             })}
+
+            {/* ─── MANIPULATOR LIQUIDITY SWEEP & TRAP OVERLAY ─── */}
+            {showManipulator &&
+              manipulatorMarkers.map((m, mIdx) => {
+                const x = toX(m.candleIndex);
+                const ySweep = toY(m.sweepPrice);
+                const isPut = m.direction === 'PUT';
+                const color = isPut ? '#c084fc' : '#38bdf8';
+                const bg = isPut ? '#3b0764' : '#082f49';
+                const border = isPut ? '#a855f7' : '#0ea5e9';
+
+                // Horizontal line showing the hunted liquidity level
+                const xStart = Math.max(PAD.left, x - candleGap * 2.5);
+                const xEnd = Math.min(W - PAD.right, x + candleGap * 1.5);
+
+                return (
+                  <g key={`manip-${m.id || mIdx}-${m.timestamp}`} className="transition-all">
+                    {/* Swept Level Dashed Line */}
+                    <line
+                      x1={xStart}
+                      y1={ySweep}
+                      x2={xEnd}
+                      y2={ySweep}
+                      stroke={color}
+                      strokeWidth="1.5"
+                      strokeDasharray="4,3"
+                      opacity="0.85"
+                    />
+
+                    {/* Sweep Hit Marker Point */}
+                    <circle cx={x} cy={ySweep} r="4.5" fill={color} stroke="#ffffff" strokeWidth="1.5" />
+
+                    {isPut ? (
+                      /* Top Sweep (Bull Trap / Stop Hunt) -> Signal PUT */
+                      <g transform={`translate(${x}, ${ySweep - 28})`}>
+                        {/* Downward Arrow */}
+                        <polygon points="0,26 -5,18 5,18" fill={color} />
+                        {/* Badge Box */}
+                        <rect
+                          x="-54"
+                          y="0"
+                          width="108"
+                          height="20"
+                          rx="4"
+                          fill={bg}
+                          stroke={border}
+                          strokeWidth="1.2"
+                          filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.6))"
+                        />
+                        <text
+                          x="0"
+                          y="10.5"
+                          fill="#f3e8ff"
+                          fontSize="7.5"
+                          fontWeight="900"
+                          fontFamily="monospace"
+                          textAnchor="middle"
+                        >
+                          🕵️ MANIPULADOR (PUT)
+                        </text>
+                        <text
+                          x="0"
+                          y="18"
+                          fill="#c084fc"
+                          fontSize="6.5"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                          textAnchor="middle"
+                        >
+                          STOP HUNT {m.confidencePct}%
+                        </text>
+                      </g>
+                    ) : (
+                      /* Bottom Sweep (Bear Trap / Liquidity Grab) -> Signal CALL */
+                      <g transform={`translate(${x}, ${ySweep + 14})`}>
+                        {/* Upward Arrow */}
+                        <polygon points="0,-4 -5,4 5,4" fill={color} />
+                        {/* Badge Box */}
+                        <rect
+                          x="-54"
+                          y="4"
+                          width="108"
+                          height="20"
+                          rx="4"
+                          fill={bg}
+                          stroke={border}
+                          strokeWidth="1.2"
+                          filter="drop-shadow(0px 2px 4px rgba(0,0,0,0.6))"
+                        />
+                        <text
+                          x="0"
+                          y="14.5"
+                          fill="#e0f2fe"
+                          fontSize="7.5"
+                          fontWeight="900"
+                          fontFamily="monospace"
+                          textAnchor="middle"
+                        >
+                          🕵️ MANIPULADOR (CALL)
+                        </text>
+                        <text
+                          x="0"
+                          y="22"
+                          fill="#38bdf8"
+                          fontSize="6.5"
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                          textAnchor="middle"
+                        >
+                          LIQUIDEZ {m.confidencePct}%
+                        </text>
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
 
             {/* Current Price Line */}
             {lastCandle && (
