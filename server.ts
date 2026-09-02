@@ -9,6 +9,7 @@ import {
   getAccount,
   setSsidOverride,
   clearSsidOverride,
+  loginWithCredentials,
   getCandles as getBrokerCandles,
   openOption as openBrokerOption,
   getBrokerOtcActives,
@@ -332,6 +333,37 @@ app.get('/api/account', async (req, res) => {
       balance: 1250.00,
       demoBalance: 10000.00,
       currency: 'USD',
+    });
+  }
+});
+
+// Connect Broker Credentials (Email + Password)
+app.post('/api/connect-credentials', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ ok: false, message: 'E-mail e senha da corretora são obrigatórios' });
+  }
+
+  try {
+    const ssid = await loginWithCredentials(email, password);
+    const account = await getAccount();
+    return res.json({
+      ok: true,
+      ssid,
+      message: 'Conectado à sua conta com sucesso!',
+      account: {
+        id: account.id,
+        name: account.name,
+        balance: account.balance,
+        demoBalance: account.demoBalance,
+        currency: account.currency,
+      },
+    });
+  } catch (err: any) {
+    const errorMsg = err?.message || 'Erro ao autenticar na corretora';
+    return res.status(400).json({
+      ok: false,
+      message: errorMsg,
     });
   }
 });

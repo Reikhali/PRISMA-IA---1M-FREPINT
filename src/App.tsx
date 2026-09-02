@@ -269,6 +269,35 @@ export default function App() {
     [analysis, candles, isDemo, selectedAsset],
   );
 
+  // Connect Credentials handler (Email + Password)
+  const handleConnectCredentials = async (
+    email: string,
+    pass: string,
+  ): Promise<{ ok: boolean; msg?: string }> => {
+    try {
+      const res = await fetch('/api/connect-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: pass }),
+      });
+      const data = await res.json();
+      if (data.ok && data.account) {
+        setAccount({
+          connected: true,
+          id: data.account.id,
+          name: data.account.name,
+          balance: data.account.balance,
+          demoBalance: data.account.demoBalance,
+          currency: data.account.currency,
+        });
+        return { ok: true };
+      }
+      return { ok: false, msg: data.message || 'Erro ao autenticar na corretora.' };
+    } catch {
+      return { ok: false, msg: 'Falha de conexão com o servidor.' };
+    }
+  };
+
   // Connect SSID handler
   const handleConnectSsid = async (ssid: string, broker: string = 'optgo'): Promise<boolean> => {
     try {
@@ -365,12 +394,13 @@ export default function App() {
         onSelectAsset={(asset) => setSelectedAsset(asset)}
       />
 
-      {/* SSID Broker Connection Modal */}
+      {/* SSID & Credentials Broker Connection Modal */}
       <SsidModal
         isOpen={isSsidModalOpen}
         onClose={() => setIsSsidModalOpen(false)}
         account={account}
         onConnectSsid={handleConnectSsid}
+        onConnectCredentials={handleConnectCredentials}
         onDisconnectSsid={handleDisconnectSsid}
       />
     </div>

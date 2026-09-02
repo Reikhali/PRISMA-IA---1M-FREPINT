@@ -76,6 +76,55 @@ export function getSsidOverride(): string | null {
   return null;
 }
 
+export async function loginWithCredentials(email: string, pass: string): Promise<string> {
+  const cleanEmail = email.trim();
+  const cleanPass = pass.trim();
+
+  if (!cleanEmail || !cleanPass) {
+    throw new Error("Email e senha da corretora são obrigatórios");
+  }
+
+  const res = await fetch(LOGIN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      Origin: "https://trade.optgobroker.com",
+      Referer: "https://trade.optgobroker.com/",
+      Accept: "application/json, text/plain, */*",
+      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+    },
+    body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+  });
+
+  const json = (await res.json().catch(() => ({}))) as {
+    data?: { token?: string; ssid?: string; ttl?: number };
+    errors?: { code: number; title: string }[];
+  };
+
+  if (json.errors && json.errors.length > 0) {
+    const err = json.errors[0];
+    if (err?.code === 301) {
+      const ttl = json.data?.ttl ?? 3600;
+      const mins = Math.ceil(ttl / 60);
+      throw new Error(`IP bloqueado temporariamente pela corretora. Aguarde ${mins} min ou use o modo SSID.`);
+    }
+    if (err?.code === 1 || err?.code === 2) {
+      throw new Error("Email ou senha da corretora incorretos.");
+    }
+    throw new Error(err?.title ?? "Erro ao autenticar na corretora");
+  }
+
+  const ssid = json?.data?.ssid ?? json?.data?.token;
+  if (!ssid) {
+    throw new Error("Não foi possível obter o token de sessão da corretora. Tente pelo modo SSID.");
+  }
+
+  setSsidOverride(ssid);
+  return ssid;
+}
+
 export async function getSsid(): Promise<string> {
   const now = Date.now();
   const ov = getSsidOverride();
