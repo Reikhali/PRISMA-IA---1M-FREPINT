@@ -6,12 +6,26 @@ import { ChineseBotPanel } from '@/components/ChineseBotPanel';
 import { MarketClock } from '@/components/MarketClock';
 import { AssetSelectorModal } from '@/components/AssetSelectorModal';
 import { SsidModal } from '@/components/SsidModal';
+import { LoginScreen } from '@/components/LoginScreen';
 import {
   playWinSound,
   playLossSound,
 } from '@/lib/sound';
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('prisma_auth_session');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return Boolean(parsed?.authenticated);
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  });
+
   const [assets, setAssets] = useState<OtcAsset[]>(OTC_ASSETS);
   const [selectedAsset, setSelectedAsset] = useState<OtcAsset>(OTC_ASSETS[0]);
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -291,6 +305,16 @@ export default function App() {
     setAccount((prev) => ({ ...prev, connected: false }));
   };
 
+  // Logout handler
+  const handleLogout = () => {
+    localStorage.removeItem('prisma_auth_session');
+    setIsAuthenticated(false);
+  };
+
+  if (!isAuthenticated) {
+    return <LoginScreen onLoginSuccess={() => setIsAuthenticated(true)} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#03070d] text-slate-100 flex flex-col font-sans selection:bg-emerald-400 selection:text-black">
       {/* Top Header */}
@@ -303,6 +327,7 @@ export default function App() {
         onOpenSsidModal={() => setIsSsidModalOpen(true)}
         robotActive={robotActive}
         onToggleRobot={() => setRobotActive(!robotActive)}
+        onLogout={handleLogout}
       />
 
       {/* Main Screen Container */}

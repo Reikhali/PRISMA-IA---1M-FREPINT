@@ -6,6 +6,7 @@ import {
   VolumeX,
   KeyRound,
   ShieldCheck,
+  LogOut,
 } from 'lucide-react';
 import type { AccountInfo } from '@/types';
 import { isSoundEnabled, setSoundEnabled, playClickSound } from '@/lib/sound';
@@ -19,6 +20,7 @@ interface HeaderProps {
   onOpenSsidModal: () => void;
   robotActive: boolean;
   onToggleRobot: () => void;
+  onLogout?: () => void;
 }
 
 export function Header({
@@ -28,6 +30,7 @@ export function Header({
   onOpenSsidModal,
   robotActive,
   onToggleRobot,
+  onLogout,
 }: HeaderProps) {
   const [brasiliaTime, setBrasiliaTime] = useState<string>('--:--:--');
   const [seconds, setSeconds] = useState<number>(0);
@@ -200,6 +203,18 @@ export function Header({
           >
             {sound ? <Volume2 className="w-4 h-4 text-emerald-400" /> : <VolumeX className="w-4 h-4" />}
           </button>
+
+          {/* Logout Button */}
+          {onLogout && (
+            <button
+              id="logout-btn"
+              onClick={onLogout}
+              className="p-1.5 rounded-lg border border-rose-500/20 bg-[#020509] text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-all"
+              title="Sair do Terminal"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </header>
