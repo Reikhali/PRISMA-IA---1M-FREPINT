@@ -3,7 +3,9 @@ import type { Candle } from '@/types';
 import {
   calculateSuperTrend,
   calculateRSI,
+  calculateTrueSupplyDemandZones,
   SuperTrendPoint,
+  SupplyDemandZone,
 } from '@/lib/supertrend-rsi-engine';
 import {
   Maximize2,
@@ -11,6 +13,7 @@ import {
   TrendingDown,
   Activity,
   Crosshair,
+  Layers,
 } from 'lucide-react';
 
 interface CandleChartProps {
@@ -20,6 +23,8 @@ interface CandleChartProps {
   precision?: number;
   isAnalyzing?: boolean;
   scanStatusText?: string;
+  enableSupplyDemand?: boolean;
+  onToggleSupplyDemand?: () => void;
 }
 
 export function CandleChart({
@@ -29,9 +34,24 @@ export function CandleChart({
   precision = 5,
   isAnalyzing = false,
   scanStatusText = 'ESCANEANDO TELA DO GRÁFICO & TICKS...',
+  enableSupplyDemand,
+  onToggleSupplyDemand,
 }: CandleChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Controle de ativação/desativação do True Supply & Demand
+  const [showSupplyDemandInternal, setShowSupplyDemandInternal] = useState<boolean>(true);
+  const isSupplyDemandActive =
+    enableSupplyDemand !== undefined ? enableSupplyDemand : showSupplyDemandInternal;
+
+  const handleToggleSupplyDemand = () => {
+    if (onToggleSupplyDemand) {
+      onToggleSupplyDemand();
+    } else {
+      setShowSupplyDemandInternal((prev) => !prev);
+    }
+  };
 
   // Estados de controle e navegação
   const [visibleCount, setVisibleCount] = useState<number>(32); // 32 velas garante velas bem "gordinhas"
@@ -45,11 +65,14 @@ export function CandleChart({
   const [priceChange, setPriceChange] = useState<number>(0);
 
   // Cálculos matemáticos dos indicadores para todas as velas
-  const { superTrendPoints, rsiValues } = useMemo(() => {
-    if (candles.length === 0) return { superTrendPoints: [], rsiValues: [] };
+  const { superTrendPoints, rsiValues, supplyDemandAnalysis } = useMemo(() => {
+    if (candles.length === 0) {
+      return { superTrendPoints: [], rsiValues: [], supplyDemandAnalysis: null };
+    }
     const st = calculateSuperTrend(candles, 10, 2.0);
     const rsi = calculateRSI(candles.map((c) => c.close), 9);
-    return { superTrendPoints: st, rsiValues: rsi };
+    const sd = calculateTrueSupplyDemandZones(candles);
+    return { superTrendPoints: st, rsiValues: rsi, supplyDemandAnalysis: sd };
   }, [candles]);
 
   // Escuta o stream em tempo real SSE
@@ -131,6 +154,22 @@ export function CandleChart({
       }
     });
 
+    // Se Supply & Demand estiver ativo, inclui as zonas mais próximas na escala do gráfico
+    if (isSupplyDemandActive && supplyDemandAnalysis) {
+      if (supplyDemandAnalysis.nearestSupply) {
+        const sTop = supplyDemandAnalysis.nearestSupply.topPrice;
+        if (sTop > maxPrice && sTop < maxPrice * 1.03) {
+          maxPrice = sTop;
+        }
+      }
+      if (supplyDemandAnalysis.nearestDemand) {
+        const dBot = supplyDemandAnalysis.nearestDemand.bottomPrice;
+        if (dBot < minPrice && dBot > minPrice * 0.97) {
+          minPrice = dBot;
+        }
+      }
+    }
+
     const priceMargin = (maxPrice - minPrice) * 0.14 || 0.0001;
     minPrice -= priceMargin;
     maxPrice += priceMargin;
@@ -172,6 +211,121 @@ export function CandleChart({
     const getX = (i: number) => i * slotWidth + slotWidth / 2;
     const getY = (price: number) =>
       mainHeight - ((price - minPrice) / priceRange) * (mainHeight - 40) - 20;
+
+    // 6.5. Desenho das Verdadeiras Zonas de Oferta e Demanda (True Supply & Demand Levels + POC)
+    if (isSupplyDemandActive && supplyDemandAnalysis) {
+      const chartRight = width - rightMargin;
+
+      // Desenha Zonas de Demanda (Suporte Institucional - Esmeralda)
+      supplyDemandAnalysis.activeDemandZones.forEach((zone) => {
+        const topY = getY(zone.topPrice);
+        const bottomY = getY(zone.bottomPrice);
+        const pocY = getY(zone.pocPrice);
+        const h = Math.max(6, bottomY - topY);
+
+        if (bottomY < 0 || topY > mainHeight) return;
+
+        ctx.save();
+        // Gradiente translúcido de Demanda
+        const grad = ctx.createLinearGradient(0, topY, 0, bottomY);
+        grad.addColorStop(0, 'rgba(16, 185, 129, 0.22)');
+        grad.addColorStop(1, 'rgba(6, 78, 59, 0.35)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, topY, chartRight, h);
+
+        // Bordas neon da zona de demanda
+        ctx.strokeStyle = 'rgba(16, 185, 129, 0.65)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(0, topY);
+        ctx.lineTo(chartRight, topY);
+        ctx.moveTo(0, bottomY);
+        ctx.lineTo(chartRight, bottomY);
+        ctx.stroke();
+
+        // Linha do Point of Control (POC - Ponto de Liquidez Máxima)
+        ctx.strokeStyle = '#34d399';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = 'rgba(52, 211, 153, 0.6)';
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(0, pocY);
+        ctx.lineTo(chartRight, pocY);
+        ctx.stroke();
+
+        // Tag visual da zona com POC
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(2, 44, 34, 0.92)';
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 1;
+        const tagBoxY = Math.max(10, Math.min(mainHeight - 20, pocY - 8));
+        ctx.roundRect(8, tagBoxY, 172, 17, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#6ee7b7';
+        ctx.textAlign = 'left';
+        ctx.fillText(`DEMAND ZONE · POC: ${zone.pocPrice.toFixed(precision)}`, 13, tagBoxY + 11.5);
+        ctx.restore();
+      });
+
+      // Desenha Zonas de Oferta (Resistência Institucional - Vermelho Rubi)
+      supplyDemandAnalysis.activeSupplyZones.forEach((zone) => {
+        const topY = getY(zone.topPrice);
+        const bottomY = getY(zone.bottomPrice);
+        const pocY = getY(zone.pocPrice);
+        const h = Math.max(6, bottomY - topY);
+
+        if (bottomY < 0 || topY > mainHeight) return;
+
+        ctx.save();
+        // Gradiente translúcido de Oferta
+        const grad = ctx.createLinearGradient(0, topY, 0, bottomY);
+        grad.addColorStop(0, 'rgba(127, 29, 29, 0.35)');
+        grad.addColorStop(1, 'rgba(239, 68, 68, 0.22)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, topY, chartRight, h);
+
+        // Bordas neon da zona de oferta
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.65)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(0, topY);
+        ctx.lineTo(chartRight, topY);
+        ctx.moveTo(0, bottomY);
+        ctx.lineTo(chartRight, bottomY);
+        ctx.stroke();
+
+        // Linha do Point of Control (POC - Ponto de Liquidez Máxima)
+        ctx.strokeStyle = '#f87171';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = 'rgba(248, 113, 113, 0.6)';
+        ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(0, pocY);
+        ctx.lineTo(chartRight, pocY);
+        ctx.stroke();
+
+        // Tag visual da zona com POC
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(69, 10, 10, 0.92)';
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 1;
+        const tagBoxY = Math.max(10, Math.min(mainHeight - 20, pocY - 8));
+        ctx.roundRect(8, tagBoxY, 172, 17, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = 'bold 8.5px "JetBrains Mono", monospace';
+        ctx.fillStyle = '#fca5a5';
+        ctx.textAlign = 'left';
+        ctx.fillText(`SUPPLY ZONE · POC: ${zone.pocPrice.toFixed(precision)}`, 13, tagBoxY + 11.5);
+        ctx.restore();
+      });
+    }
 
     // 7. Desenho da Linha SuperTrend (ATR 10, Multiplicador 2.0)
     if (visibleSt.length > 1) {
@@ -681,6 +835,27 @@ export function CandleChart({
             </span>
           </div>
 
+          {/* Botão de Ativar/Desativar True Supply & Demand (Zonas de Oferta e Demanda + POC) */}
+          <button
+            type="button"
+            id="btn-toggle-true-supply-demand"
+            onClick={handleToggleSupplyDemand}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-mono font-bold transition-all cursor-pointer ${
+              isSupplyDemandActive
+                ? 'bg-amber-500/20 border-amber-400 text-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.25)]'
+                : 'bg-slate-900/80 border-slate-700 text-slate-400 hover:text-slate-200'
+            }`}
+            title="Ativar ou Desativar True Supply & Demand Levels (Zonas de Oferta e Demanda Institucionais + POC)"
+          >
+            <Layers className="w-3.5 h-3.5 text-amber-400" />
+            <span>TRUE S&D: {isSupplyDemandActive ? 'ATIVADO' : 'DESATIVADO'}</span>
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isSupplyDemandActive ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
+              }`}
+            />
+          </button>
+
           {/* Cotação Atual */}
           {currentPrice !== null && (
             <div className="flex items-center gap-1.5">
@@ -765,6 +940,14 @@ export function CandleChart({
           <div className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 bg-rose-500/30 border border-rose-400 rounded" />
             <span className="text-rose-300 font-bold">▼ PUT (Venda)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-2 bg-emerald-500/20 border border-emerald-400 border-dashed rounded-sm" />
+            <span className="text-emerald-400">Demand (Suporte/POC)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-2 bg-rose-500/20 border border-rose-400 border-dashed rounded-sm" />
+            <span className="text-rose-400">Supply (Oferta/POC)</span>
           </div>
         </div>
 

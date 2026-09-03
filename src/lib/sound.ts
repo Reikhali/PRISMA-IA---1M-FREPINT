@@ -164,10 +164,32 @@ export function playClickSound() {
   osc.stop(now + 0.05);
 }
 
-/** Síntese de Voz Nativa em Português para Anúncio de Sinais do Robô IA */
-export function speakVoiceNotification(text: string) {
-  if (!soundEnabled) return;
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+let activeUtterance: SpeechSynthesisUtterance | null = null;
+
+export function stopSpeaking() {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+      activeUtterance = null;
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+/** Síntese de Voz Nativa em Português para Anúncio de Sinais e Respostas do Robô IA */
+export function speakVoiceNotification(
+  text: string,
+  options?: { onStart?: () => void; onEnd?: () => void }
+) {
+  if (!soundEnabled) {
+    options?.onEnd?.();
+    return;
+  }
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    options?.onEnd?.();
+    return;
+  }
 
   try {
     window.speechSynthesis.cancel();
@@ -179,11 +201,30 @@ export function speakVoiceNotification(text: string) {
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
 
+      utterance.onstart = () => {
+        options?.onStart?.();
+      };
+      utterance.onend = () => {
+        activeUtterance = null;
+        options?.onEnd?.();
+      };
+      utterance.onerror = () => {
+        activeUtterance = null;
+        options?.onEnd?.();
+      };
+
       const voices = window.speechSynthesis.getVoices();
-      const ptVoice = voices.find((v) => v.lang.toLowerCase().includes('pt-br') || v.lang.toLowerCase().includes('pt'));
+      const ptVoice = voices.find(
+        (v) =>
+          v.lang.toLowerCase().includes('pt-br') ||
+          v.lang.toLowerCase().includes('pt_br') ||
+          v.lang.toLowerCase().includes('pt')
+      );
       if (ptVoice) {
         utterance.voice = ptVoice;
       }
+
+      activeUtterance = utterance;
       window.speechSynthesis.speak(utterance);
     };
 
@@ -198,5 +239,6 @@ export function speakVoiceNotification(text: string) {
     }
   } catch (err) {
     console.warn('Falha na síntese de voz:', err);
+    options?.onEnd?.();
   }
 }

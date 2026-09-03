@@ -1,4 +1,11 @@
 import type { Candle } from '@/types';
+import {
+  calculateTrueSupplyDemandZones,
+  type SupplyDemandAnalysis,
+  type SupplyDemandZone,
+} from './supply-demand-engine';
+
+export * from './supply-demand-engine';
 
 export interface SuperTrendPoint {
   time: number;
@@ -22,11 +29,15 @@ export interface StrategySignal {
   candleQuality: 'SAUDAVEL' | 'DOJI_TRAVADO' | 'EXAUSTAO';
   candleMovement: 'IMPULSAO_ALTA' | 'IMPULSAO_BAIXA' | 'LATERAL';
   priceAction: string;
+  supplyDemandAnalysis?: SupplyDemandAnalysis;
+  supplyDemandOk?: boolean;
+  supplyDemandStatus?: string;
   filters: {
     superTrendOk: boolean;
     rsiMomentumOk: boolean;
     antiExhaustionOk: boolean;
     volatilityOk: boolean;
+    supplyDemandOk?: boolean;
   };
   reasons: string[];
   blocks: string[];
@@ -200,8 +211,11 @@ export function calculateRSI(closes: number[], period = 9): number[] {
   return rsis;
 }
 
-// ─── 4. Motor de Avaliação da Estratégia na Vela Atual (Nascimento & Price Action) ─
-export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal {
+// ─── 4. Motor de Avaliação da Estratégia na Vela Atual (Nascimento & Price Action + True Supply & Demand) ─
+export function evaluateSuperTrendRsiStrategy(
+  candles: Candle[],
+  enableSupplyDemand = true
+): StrategySignal {
   if (candles.length < 15) {
     return {
       verdict: 'NO_TRADE',
@@ -212,11 +226,13 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
       candleQuality: 'SAUDAVEL',
       candleMovement: 'LATERAL',
       priceAction: 'Aguardando histórico de velas...',
+      supplyDemandStatus: 'Aguardando histórico...',
       filters: {
         superTrendOk: false,
         rsiMomentumOk: false,
         antiExhaustionOk: false,
         volatilityOk: false,
+        supplyDemandOk: false,
       },
       reasons: ['Aguardando histórico suficiente de velas para cálculo...'],
       blocks: ['Histórico menor que 15 velas.'],
@@ -227,6 +243,7 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
   const stPoints = calculateSuperTrend(candles, 10, 2.0);
   const closes = candles.map((c) => c.close);
   const rsiValues = calculateRSI(closes, 9);
+  const sdAnalysis = calculateTrueSupplyDemandZones(candles);
 
   const lastCandle = candles[candles.length - 1];
   const lastSt = stPoints[stPoints.length - 1];
@@ -291,10 +308,30 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
   const reasons: string[] = [];
   const blocks: string[] = [];
   let confidence = 0;
+  let supplyDemandOk = false;
+  let supplyDemandStatus = 'Zonas Livres';
+
+  // Avaliação de confluência do True Supply & Demand
+  const hasDemandConfluence = sdAnalysis.inDemandZone || sdAnalysis.bouncedDemand;
+  const hasSupplyConfluence = sdAnalysis.inSupplyZone || sdAnalysis.bouncedSupply;
 
   if (stCallOk && rsiCallMomentum && rsiCallNotExhausted && candleCallValid) {
     verdict = 'CALL';
     confidence = 95;
+
+    if (enableSupplyDemand && hasDemandConfluence) {
+      confidence = 98;
+      supplyDemandOk = true;
+      supplyDemandStatus = `Demanda Institucional Ativa [POC ${sdAnalysis.nearestDemand?.pocPrice.toFixed(5)}]`;
+      reasons.push(`True Demand: Preço apoiado em Suporte Institucional com POC em ${sdAnalysis.nearestDemand?.pocPrice.toFixed(5)}.`);
+    } else if (enableSupplyDemand && sdAnalysis.inSupplyZone && !sdAnalysis.bouncedSupply) {
+      blocks.push(`Atenção: Preço em teste direto da Zona de Oferta [POC ${sdAnalysis.nearestSupply?.pocPrice.toFixed(5)}].`);
+    } else if (enableSupplyDemand) {
+      supplyDemandOk = true;
+      supplyDemandStatus = 'Espaço Livre até Próxima Oferta';
+      reasons.push('Zonas Institucionais: Fluxo livre sem barreiras imediatas.');
+    }
+
     reasons.push('Vela Atual: Movimento de alta confirmado a partir do nascimento da vela.');
     reasons.push('SuperTrend VERDE: Suporte dinâmico validando o avanço do preço.');
     reasons.push(`RSI(9) = ${lastRsi.toFixed(1)}: Fluxo comprador ativo sem exaustão (< 70).`);
@@ -302,6 +339,20 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
   } else if (stPutOk && rsiPutMomentum && rsiPutNotExhausted && candlePutValid) {
     verdict = 'PUT';
     confidence = 95;
+
+    if (enableSupplyDemand && hasSupplyConfluence) {
+      confidence = 98;
+      supplyDemandOk = true;
+      supplyDemandStatus = `Oferta Institucional Ativa [POC ${sdAnalysis.nearestSupply?.pocPrice.toFixed(5)}]`;
+      reasons.push(`True Supply: Preço rejeitado em Resistência Institucional com POC em ${sdAnalysis.nearestSupply?.pocPrice.toFixed(5)}.`);
+    } else if (enableSupplyDemand && sdAnalysis.inDemandZone && !sdAnalysis.bouncedDemand) {
+      blocks.push(`Atenção: Preço em teste direto da Zona de Demanda [POC ${sdAnalysis.nearestDemand?.pocPrice.toFixed(5)}].`);
+    } else if (enableSupplyDemand) {
+      supplyDemandOk = true;
+      supplyDemandStatus = 'Espaço Livre até Próxima Demanda';
+      reasons.push('Zonas Institucionais: Fluxo livre sem barreiras imediatas.');
+    }
+
     reasons.push('Vela Atual: Movimento de baixa confirmado a partir do nascimento da vela.');
     reasons.push('SuperTrend VERMELHO: Resistência dinâmica validando a descida do preço.');
     reasons.push(`RSI(9) = ${lastRsi.toFixed(1)}: Fluxo vendedor ativo sem exaustão (> 30).`);
@@ -318,6 +369,11 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
     if (isDoji) {
       blocks.push('Vela atual com pouca oscilação em relação à abertura (Doji/Travado).');
     }
+    if (enableSupplyDemand && (sdAnalysis.inSupplyZone || sdAnalysis.inDemandZone)) {
+      supplyDemandStatus = sdAnalysis.inDemandZone
+        ? `Preço na Demanda (${sdAnalysis.nearestDemand?.pocPrice.toFixed(5)})`
+        : `Preço na Oferta (${sdAnalysis.nearestSupply?.pocPrice.toFixed(5)})`;
+    }
     if (blocks.length === 0) {
       blocks.push('Aguardando sincronização exata do SuperTrend(10, 2) com o RSI(9) na vela atual.');
     }
@@ -332,11 +388,15 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
     candleQuality: isDoji ? 'DOJI_TRAVADO' : 'SAUDAVEL',
     candleMovement,
     priceAction,
+    supplyDemandAnalysis: sdAnalysis,
+    supplyDemandOk,
+    supplyDemandStatus,
     filters: {
       superTrendOk: verdict === 'CALL' ? stCallOk : (verdict === 'PUT' ? stPutOk : false),
       rsiMomentumOk: verdict === 'CALL' ? rsiCallMomentum : (verdict === 'PUT' ? rsiPutMomentum : false),
       antiExhaustionOk: verdict === 'CALL' ? rsiCallNotExhausted : (verdict === 'PUT' ? rsiPutNotExhausted : false),
       volatilityOk: !isDoji,
+      supplyDemandOk,
     },
     reasons,
     blocks,

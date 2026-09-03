@@ -16,6 +16,7 @@ import {
   Radio,
   Scan,
   RefreshCw,
+  Layers,
 } from 'lucide-react';
 import type { OtcAsset, Candle, AccountInfo } from '@/types';
 import { playClickSound, playPreAnalysisSound, playSignalTriggerSound, speakVoiceNotification } from '@/lib/sound';
@@ -65,6 +66,7 @@ export function ChineseBotPanel({
   const [lastAnalysisTime, setLastAnalysisTime] = useState<string>('');
   const [hasScannedManual, setHasScannedManual] = useState<boolean>(false);
   const [autoVoiceAlerts, setAutoVoiceAlerts] = useState<boolean>(true);
+  const [enableSupplyDemand, setEnableSupplyDemand] = useState<boolean>(true);
   const lastAutoAlertCandleTimeRef = useRef<number>(0);
 
   // O sinal ativo de operação SÓ é gerado e fixado quando o usuário solicita a análise ou quando o robô detecta confluência automática
@@ -118,8 +120,8 @@ export function ChineseBotPanel({
 
   // Métricas técnicas em tempo real (apenas para alimentar os medidores dos cards sem trocar o sinal de operação)
   const realtimeMetrics = useMemo(() => {
-    return evaluateSuperTrendRsiStrategy(candles);
-  }, [candles]);
+    return evaluateSuperTrendRsiStrategy(candles, enableSupplyDemand);
+  }, [candles, enableSupplyDemand]);
 
   // Disparo exclusivo do Botão de Análise: Captura a tela, lê os ticks, gera o sinal ESTÁVEL e FALA COM VOZ
   const handleRunAnalysis = useCallback(() => {
@@ -134,14 +136,14 @@ export function ChineseBotPanel({
       setScanStatusText('RECEBENDO FLUXO DE TICKS E VOLATILIDADE OTC...');
     }, 400);
 
-    // Etapa 2: Processamento SuperTrend (10, 2) e RSI (9, 50)
+    // Etapa 2: Processamento SuperTrend (10, 2), RSI (9, 50) e True Supply & Demand
     setTimeout(() => {
-      setScanStatusText('PROCESSANDO SUPERTREND (10, 2) + RSI (9, 50)...');
+      setScanStatusText('CALCULANDO SUPERTREND + RSI + TRUE SUPPLY & DEMAND...');
     }, 850);
 
     // Etapa 3: Consenso das 3 IAs, Fixação do Sinal e FALA DO ROBÔ POR VOZ
     setTimeout(() => {
-      const computedSignal = evaluateSuperTrendRsiStrategy(candles);
+      const computedSignal = evaluateSuperTrendRsiStrategy(candles, enableSupplyDemand);
       setAnalyzedSignal(computedSignal);
       setIsAnalyzing(false);
       setHasScannedManual(true);
@@ -157,16 +159,18 @@ export function ChineseBotPanel({
 
       if (computedSignal.verdict === 'CALL') {
         playSignalTriggerSound('call');
-        speakVoiceNotification(`Atenção! Sinal de Compra confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}.`);
+        const sdMsg = computedSignal.supplyDemandOk ? ' com confluência de Demanda e POC' : '';
+        speakVoiceNotification(`Atenção! Sinal de Compra confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}${sdMsg}.`);
       } else if (computedSignal.verdict === 'PUT') {
         playSignalTriggerSound('put');
-        speakVoiceNotification(`Atenção! Sinal de Venda confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}.`);
+        const sdMsg = computedSignal.supplyDemandOk ? ' com confluência de Oferta e POC' : '';
+        speakVoiceNotification(`Atenção! Sinal de Venda confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}${sdMsg}.`);
       } else {
         playClickSound();
         speakVoiceNotification(`Vela atual sem confluência para ${selectedAsset.label}. Proteção ativada.`);
       }
     }, 1300);
-  }, [isAnalyzing, candles, selectedAsset.label]);
+  }, [isAnalyzing, candles, enableSupplyDemand, selectedAsset.label]);
 
   // Alerta automático do robô no nascimento da vela atual:
   // Quando as métricas confirmam um sinal (CALL ou PUT) logo no nascimento (:00s a :08s),
@@ -435,8 +439,8 @@ export function ChineseBotPanel({
           </div>
         </div>
 
-        {/* Os 4 Cards de Filtros da Estratégia */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {/* Os 5 Cards de Filtros da Estratégia + True Supply & Demand */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
           {/* Card 1: SuperTrend (10, 2.0) */}
           <div
             className={`p-3.5 rounded-xl border font-mono transition-all ${
@@ -572,6 +576,56 @@ export function ChineseBotPanel({
             </div>
             <p className="text-[11px] text-slate-400 mt-1">
               {realtimeMetrics.priceAction || 'Lendo o verdadeiro movimento do preço na vela atual.'}
+            </p>
+          </div>
+
+          {/* Card 5: True Supply & Demand (Zonas de Oferta e Demanda + POC) */}
+          <div
+            className={`p-3.5 rounded-xl border font-mono transition-all ${
+              enableSupplyDemand
+                ? realtimeMetrics.supplyDemandOk
+                  ? 'bg-amber-950/20 border-amber-500/50 text-amber-300'
+                  : 'bg-slate-900/70 border-slate-700 text-slate-300'
+                : 'bg-slate-950/60 border-slate-800 text-slate-500 opacity-60'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-amber-400" />
+                5. True S&D (POC)
+              </span>
+              <button
+                type="button"
+                id="btn-toggle-supply-demand-card"
+                onClick={() => {
+                  playClickSound();
+                  setEnableSupplyDemand((prev) => !prev);
+                }}
+                className={`text-[9px] font-black px-1.5 py-0.5 rounded border transition-colors cursor-pointer ${
+                  enableSupplyDemand
+                    ? 'bg-amber-500/20 border-amber-400 text-amber-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-400'
+                }`}
+                title="Ativar ou Desativar True Supply & Demand Levels (Zonas de Oferta e Demanda + POC)"
+              >
+                {enableSupplyDemand ? 'ATIVO' : 'DESLIGADO'}
+              </button>
+            </div>
+            <div className="text-base font-black text-white truncate">
+              {enableSupplyDemand ? (
+                realtimeMetrics.supplyDemandOk ? (
+                  <span className="text-amber-300">CONFLUÊNCIA</span>
+                ) : (
+                  <span className="text-slate-300">ZONAS LIVRES</span>
+                )
+              ) : (
+                <span className="text-slate-500">DESLIGADO</span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1 truncate">
+              {enableSupplyDemand
+                ? realtimeMetrics.supplyDemandStatus || 'Zonas de Oferta e Demanda Institucionais'
+                : 'Indicador desativado pelo operador.'}
             </p>
           </div>
         </div>
@@ -714,7 +768,7 @@ export function ChineseBotPanel({
         </div>
       </div>
 
-      {/* Gráfico com Velas Gordinhas Estilo Order Flow + Linha SuperTrend + Sinais + RSI */}
+      {/* Gráfico com Velas Gordinhas Estilo Order Flow + Linha SuperTrend + Sinais + RSI + True S&D */}
       <div id="prisma-supertrend-rsi-chart" className="w-full">
         <CandleChart
           candles={candles}
@@ -723,6 +777,11 @@ export function ChineseBotPanel({
           precision={precision}
           isAnalyzing={isAnalyzing}
           scanStatusText={scanStatusText}
+          enableSupplyDemand={enableSupplyDemand}
+          onToggleSupplyDemand={() => {
+            playClickSound();
+            setEnableSupplyDemand((prev) => !prev);
+          }}
         />
       </div>
     </div>
