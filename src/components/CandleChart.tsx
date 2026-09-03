@@ -8,6 +8,10 @@ import {
   SupplyDemandZone,
 } from '@/lib/supertrend-rsi-engine';
 import {
+  analyzeAllCandlesForDrawing,
+  type CandleAnalysis,
+} from '@/lib/market-structure-engine';
+import {
   Maximize2,
   TrendingUp,
   TrendingDown,
@@ -65,14 +69,15 @@ export function CandleChart({
   const [priceChange, setPriceChange] = useState<number>(0);
 
   // Cálculos matemáticos dos indicadores para todas as velas
-  const { superTrendPoints, rsiValues, supplyDemandAnalysis } = useMemo(() => {
+  const { superTrendPoints, rsiValues, supplyDemandAnalysis, candleAnalyses } = useMemo(() => {
     if (candles.length === 0) {
-      return { superTrendPoints: [], rsiValues: [], supplyDemandAnalysis: null };
+      return { superTrendPoints: [], rsiValues: [], supplyDemandAnalysis: null, candleAnalyses: [] };
     }
     const st = calculateSuperTrend(candles, 10, 2.0);
     const rsi = calculateRSI(candles.map((c) => c.close), 9);
     const sd = calculateTrueSupplyDemandZones(candles);
-    return { superTrendPoints: st, rsiValues: rsi, supplyDemandAnalysis: sd };
+    const analyses = analyzeAllCandlesForDrawing(candles);
+    return { superTrendPoints: st, rsiValues: rsi, supplyDemandAnalysis: sd, candleAnalyses: analyses };
   }, [candles]);
 
   // Escuta o stream em tempo real SSE
@@ -135,6 +140,7 @@ export function CandleChart({
     const visibleCandles = candles.slice(startIdx, endIdx);
     const visibleSt = superTrendPoints.slice(startIdx, endIdx);
     const visibleRsi = rsiValues.slice(startIdx, endIdx);
+    const visibleAnalyses = candleAnalyses.slice(startIdx, endIdx);
 
     if (visibleCandles.length === 0) return;
 
@@ -425,90 +431,197 @@ export function CandleChart({
         ctx.fillRect(left + 2, topY + 2, Math.max(2, candleWidth * 0.25), bodyH - 4);
       }
 
-      // 9. Marcação de Sinais da Estratégia (Setas CALL / PUT no Gráfico)
-      const st = visibleSt[i];
-      const rsi = visibleRsi[i];
-      const prevSt = visibleSt[i - 1];
+      // 9. Desenho dos Padrões dos Shorts & Figuras Gráficas nas Velas
+      const cAnalysis = visibleAnalyses[i];
 
-      // Gatilho de sinal:
-      // CALL: SuperTrend BULLISH, RSI > 50 e RSI < 70, e preço fechou a favor
-      // PUT: SuperTrend BEARISH, RSI < 50 e RSI > 30, e preço fechou a favor
-      const isCallSignal =
-        st &&
-        st.direction === 'BULLISH' &&
-        c.close >= st.value &&
-        rsi !== undefined &&
-        rsi > 50 &&
-        rsi < 70 &&
-        (!prevSt || prevSt.direction === 'BEARISH' || (visibleRsi[i - 1] ?? 0) <= 50);
+      // A. Padrão Anatômico da Vela (Shorts: Força, Engolfo, Pinbar, Doji)
+      if (cAnalysis) {
+        let patternTag = '';
+        let patternColor = '#94a3b8';
+        let patternBg = 'rgba(15, 23, 42, 0.85)';
 
-      const isPutSignal =
-        st &&
-        st.direction === 'BEARISH' &&
-        c.close <= st.value &&
-        rsi !== undefined &&
-        rsi < 50 &&
-        rsi > 30 &&
-        (!prevSt || prevSt.direction === 'BULLISH' || (visibleRsi[i - 1] ?? 0) >= 50);
+        if (cAnalysis.candleType === 'STRENGTH_BULLISH') {
+          patternTag = 'FORÇA ▲';
+          patternColor = '#34d399';
+          patternBg = 'rgba(6, 78, 59, 0.88)';
+        } else if (cAnalysis.candleType === 'STRENGTH_BEARISH') {
+          patternTag = 'FORÇA ▼';
+          patternColor = '#f87171';
+          patternBg = 'rgba(127, 29, 29, 0.88)';
+        } else if (cAnalysis.candleType === 'ENGULFING_BULLISH') {
+          patternTag = 'ENGULF ▲';
+          patternColor = '#6ee7b7';
+          patternBg = 'rgba(6, 95, 70, 0.9)';
+        } else if (cAnalysis.candleType === 'ENGULFING_BEARISH') {
+          patternTag = 'ENGULF ▼';
+          patternColor = '#fca5a5';
+          patternBg = 'rgba(153, 27, 27, 0.9)';
+        } else if (cAnalysis.candleType === 'PINBAR_BULLISH') {
+          patternTag = 'PINBAR ▲';
+          patternColor = '#38bdf8';
+          patternBg = 'rgba(12, 74, 110, 0.9)';
+        } else if (cAnalysis.candleType === 'PINBAR_BEARISH') {
+          patternTag = 'PINBAR ▼';
+          patternColor = '#fb923c';
+          patternBg = 'rgba(124, 45, 18, 0.9)';
+        } else if (cAnalysis.isIndecision) {
+          patternTag = 'DOJI';
+          patternColor = '#94a3b8';
+          patternBg = 'rgba(30, 41, 59, 0.85)';
+        }
 
-      if (isCallSignal) {
-        // Seta e Badge CALL abaixo da vela
-        const tagY = lowY + 24;
-        ctx.save();
-        ctx.fillStyle = '#10b981';
-        ctx.shadowColor = '#10b981';
-        ctx.shadowBlur = 10;
+        if (patternTag) {
+          ctx.save();
+          const pTagY = isGreen ? lowY + 11 : highY - 11;
+          ctx.fillStyle = patternBg;
+          ctx.strokeStyle = patternColor;
+          ctx.lineWidth = 0.8;
+          ctx.roundRect(x - 18, pTagY - 6, 36, 12, 3);
+          ctx.fill();
+          ctx.stroke();
 
-        // Triângulo apontando para cima
-        ctx.beginPath();
-        ctx.moveTo(x, lowY + 8);
-        ctx.lineTo(x - 6, lowY + 16);
-        ctx.lineTo(x + 6, lowY + 16);
-        ctx.closePath();
-        ctx.fill();
+          ctx.font = 'bold 7.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = patternColor;
+          ctx.textAlign = 'center';
+          ctx.fillText(patternTag, x, pTagY + 2.5);
+          ctx.restore();
+        }
 
-        // Badge CALL
-        ctx.fillStyle = 'rgba(6, 78, 59, 0.9)';
-        ctx.strokeStyle = '#10b981';
-        ctx.lineWidth = 1;
-        ctx.roundRect(x - 22, tagY - 6, 44, 16, 4);
-        ctx.fill();
-        ctx.stroke();
+        // B. Figuras Gráficas & Quebras Estruturais (BOS, CHoCH, Topo Duplo M, Fundo Duplo W, Sweep)
+        if (cAnalysis.structureEvent && cAnalysis.structureEvent !== 'NONE') {
+          ctx.save();
+          let sText = '';
+          let sColor = '#38bdf8';
+          let sBg = 'rgba(2, 6, 23, 0.92)';
+          let isStructBull = true;
 
-        ctx.font = 'bold 9px "JetBrains Mono", monospace';
-        ctx.fillStyle = '#6ee7b7';
-        ctx.textAlign = 'center';
-        ctx.fillText('CALL', x, tagY + 5);
-        ctx.restore();
-      } else if (isPutSignal) {
-        // Seta e Badge PUT acima da vela
-        const tagY = highY - 24;
-        ctx.save();
-        ctx.fillStyle = '#ef4444';
-        ctx.shadowColor = '#ef4444';
-        ctx.shadowBlur = 10;
+          if (cAnalysis.structureEvent === 'DOUBLE_BOTTOM') {
+            sText = 'W · FUNDO DUPLO';
+            sColor = '#fbbf24'; // Dourado
+            sBg = 'rgba(120, 53, 15, 0.92)';
+            isStructBull = true;
+          } else if (cAnalysis.structureEvent === 'DOUBLE_TOP') {
+            sText = 'M · TOPO DUPLO';
+            sColor = '#e879f9'; // Magenta/Púrpura
+            sBg = 'rgba(112, 26, 117, 0.92)';
+            isStructBull = false;
+          } else if (cAnalysis.structureEvent === 'CHOCH_BULL') {
+            sText = 'CHoCH (REVERSÃO ▲)';
+            sColor = '#34d399';
+            sBg = 'rgba(6, 78, 59, 0.95)';
+            isStructBull = true;
+          } else if (cAnalysis.structureEvent === 'CHOCH_BEAR') {
+            sText = 'CHoCH (REVERSÃO ▼)';
+            sColor = '#f87171';
+            sBg = 'rgba(127, 29, 29, 0.95)';
+            isStructBull = false;
+          } else if (cAnalysis.structureEvent === 'BOS_BULL') {
+            sText = 'BOS ▲';
+            sColor = '#10b981';
+            sBg = 'rgba(4, 120, 87, 0.9)';
+            isStructBull = true;
+          } else if (cAnalysis.structureEvent === 'BOS_BEAR') {
+            sText = 'BOS ▼';
+            sColor = '#ef4444';
+            sBg = 'rgba(185, 28, 28, 0.9)';
+            isStructBull = false;
+          } else if (cAnalysis.structureEvent === 'LIQUIDITY_SWEEP_LOW') {
+            sText = 'SWEEP (MANIPULAÇÃO ▲)';
+            sColor = '#38bdf8';
+            sBg = 'rgba(12, 74, 110, 0.92)';
+            isStructBull = true;
+          } else if (cAnalysis.structureEvent === 'LIQUIDITY_SWEEP_HIGH') {
+            sText = 'SWEEP (MANIPULAÇÃO ▼)';
+            sColor = '#fb923c';
+            sBg = 'rgba(124, 45, 18, 0.92)';
+            isStructBull = false;
+          }
 
-        // Triângulo apontando para baixo
-        ctx.beginPath();
-        ctx.moveTo(x, highY - 8);
-        ctx.lineTo(x - 6, highY - 16);
-        ctx.lineTo(x + 6, highY - 16);
-        ctx.closePath();
-        ctx.fill();
+          const sWidth = Math.max(38, sText.length * 5.8 + 8);
+          const sY = isStructBull ? lowY + 26 : highY - 26;
 
-        // Badge PUT
-        ctx.fillStyle = 'rgba(127, 29, 29, 0.9)';
-        ctx.strokeStyle = '#ef4444';
-        ctx.lineWidth = 1;
-        ctx.roundRect(x - 20, tagY - 6, 40, 16, 4);
-        ctx.fill();
-        ctx.stroke();
+          ctx.fillStyle = sBg;
+          ctx.strokeStyle = sColor;
+          ctx.lineWidth = 1;
+          ctx.shadowColor = sColor;
+          ctx.shadowBlur = 6;
+          ctx.roundRect(x - sWidth / 2, sY - 7, sWidth, 14, 3);
+          ctx.fill();
+          ctx.stroke();
 
-        ctx.font = 'bold 9px "JetBrains Mono", monospace';
-        ctx.fillStyle = '#fca5a5';
-        ctx.textAlign = 'center';
-        ctx.fillText('PUT', x, tagY + 5);
-        ctx.restore();
+          ctx.font = 'bold 8px "JetBrains Mono", monospace';
+          ctx.fillStyle = sColor;
+          ctx.textAlign = 'center';
+          ctx.fillText(sText, x, sY + 3);
+          ctx.restore();
+        }
+
+        // C. Sinais CALL e PUT Institucionais (com Anti-Overtrading & Confluência)
+        if (cAnalysis.signalTrigger === 'CALL') {
+          const tagY = lowY + 46;
+          ctx.save();
+          ctx.fillStyle = '#10b981';
+          ctx.shadowColor = '#10b981';
+          ctx.shadowBlur = 12;
+
+          // Triângulo apontando para cima
+          ctx.beginPath();
+          ctx.moveTo(x, lowY + 6);
+          ctx.lineTo(x - 7, lowY + 15);
+          ctx.lineTo(x + 7, lowY + 15);
+          ctx.closePath();
+          ctx.fill();
+
+          // Badge CALL
+          ctx.fillStyle = 'rgba(4, 120, 87, 0.95)';
+          ctx.strokeStyle = '#34d399';
+          ctx.lineWidth = 1.2;
+          ctx.roundRect(x - 30, tagY - 8, 60, 24, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.fillText('▲ CALL M1', x, tagY + 1);
+
+          ctx.font = 'bold 7px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#6ee7b7';
+          ctx.fillText(cAnalysis.signalReason?.slice(0, 14) || 'ESTRUTURA', x, tagY + 10);
+          ctx.restore();
+        } else if (cAnalysis.signalTrigger === 'PUT') {
+          const tagY = highY - 46;
+          ctx.save();
+          ctx.fillStyle = '#ef4444';
+          ctx.shadowColor = '#ef4444';
+          ctx.shadowBlur = 12;
+
+          // Triângulo apontando para baixo
+          ctx.beginPath();
+          ctx.moveTo(x, highY - 6);
+          ctx.lineTo(x - 7, highY - 15);
+          ctx.lineTo(x + 7, highY - 15);
+          ctx.closePath();
+          ctx.fill();
+
+          // Badge PUT
+          ctx.fillStyle = 'rgba(153, 27, 27, 0.95)';
+          ctx.strokeStyle = '#f87171';
+          ctx.lineWidth = 1.2;
+          ctx.roundRect(x - 30, tagY - 8, 60, 24, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.font = 'bold 9.5px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#ffffff';
+          ctx.textAlign = 'center';
+          ctx.fillText('▼ PUT M1', x, tagY + 1);
+
+          ctx.font = 'bold 7px "JetBrains Mono", monospace';
+          ctx.fillStyle = '#fca5a5';
+          ctx.fillText(cAnalysis.signalReason?.slice(0, 14) || 'ESTRUTURA', x, tagY + 10);
+          ctx.restore();
+        }
       }
     });
 
