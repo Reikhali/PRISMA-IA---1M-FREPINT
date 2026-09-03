@@ -18,8 +18,6 @@ interface HeaderProps {
   isDemo: boolean;
   onToggleDemo: (demo: boolean) => void;
   onOpenSsidModal: () => void;
-  robotActive: boolean;
-  onToggleRobot: () => void;
   onLogout?: () => void;
 }
 
@@ -28,8 +26,6 @@ export function Header({
   isDemo,
   onToggleDemo,
   onOpenSsidModal,
-  robotActive,
-  onToggleRobot,
   onLogout,
 }: HeaderProps) {
   const [brasiliaTime, setBrasiliaTime] = useState<string>('--:--:--');
@@ -119,26 +115,8 @@ export function Header({
           </div>
         </div>
 
-        {/* Right: Robot Switch, Account & Controls */}
+        {/* Right: Account & Controls */}
         <div className="flex items-center gap-2.5 w-full md:w-auto justify-end">
-          {/* Auto Robot Quick Toggle */}
-          <button
-            id="robot-quick-toggle"
-            onClick={onToggleRobot}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition-all border ${
-              robotActive
-                ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 shadow-md shadow-emerald-900/30'
-                : 'bg-[#020509] border-emerald-500/20 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <div
-              className={`w-2 h-2 rounded-full ${
-                robotActive ? 'bg-emerald-400 animate-ping' : 'bg-slate-600'
-              }`}
-            />
-            <span>{robotActive ? 'ROBÔ ATIVO' : 'ROBÔ DESLIGADO'}</span>
-          </button>
-
           {/* Demo / Real Switch */}
           <div className="flex items-center bg-[#020509] p-0.5 rounded-lg border border-emerald-500/20 font-mono">
             <button

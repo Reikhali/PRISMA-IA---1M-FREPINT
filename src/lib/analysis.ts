@@ -101,13 +101,13 @@ export function evaluateMarketSignal(
       confidencePct: pocRes.confidencePct,
       confidenceLevel: pocRes.confidenceLevel,
       trendScore: 97,
-      trendLabel: `POC Institucional: Linha Amarela ${pocRes.pocPrice.toFixed(5)}`,
+      trendLabel: `Linha Amarela POC: ${pocRes.pocPrice.toFixed(5)} (${pocRes.manipulatorStatus || 'Região Institucional'})`,
       trendDir: isCall ? 'call' : isPut ? 'put' : 'neutral',
-      momentumScore: 95,
-      momentumLabel: pocRes.description,
+      momentumScore: 96,
+      momentumLabel: pocRes.retestStatus || pocRes.description,
       momentumDir: isCall ? 'call' : isPut ? 'put' : 'neutral',
       volatilityScore: 96,
-      volatilityLabel: 'Blocos de Volume Profile M1 Sincronizados',
+      volatilityLabel: pocRes.volumeProfileBalance || 'Balanço do Volume Profile Sincronizado',
       volatilityLevel: 'Steady',
       volatilityApproved: true,
       rsi: vectorRes.rsi,
@@ -125,7 +125,7 @@ export function evaluateMarketSignal(
     };
   }
 
-  // 2. ESTRATÉGIA: ORDER FLOW & FOOTPRINT (Clusters + Delta Institucional + Absorção)
+  // 2. ESTRATÉGIA: ORDER FLOW & FOOTPRINT (Rompimento com Alto Volume + Delta)
   const isCall = fpRes.verdict === 'CALL';
   const isPut = fpRes.verdict === 'PUT';
 
@@ -137,13 +137,13 @@ export function evaluateMarketSignal(
     confidencePct: fpRes.confidencePct,
     confidenceLevel: fpRes.confidenceLevel,
     trendScore: 96,
-    trendLabel: `Order Flow Delta: ${fpRes.activeAbsorption.description}`,
+    trendLabel: fpRes.breakoutInfo?.description || `Order Flow: ${fpRes.activeAbsorption.description}`,
     trendDir: isCall ? 'call' : isPut ? 'put' : 'neutral',
-    momentumScore: 94,
-    momentumLabel: `Clusters & Absorção: ${fpRes.lastFootprint ? (isCall ? `Pavio Fundo ${fpRes.lastFootprint.bottomRatio}` : `Pavio Topo ${fpRes.lastFootprint.topRatio}`) : 'Ativo'}`,
+    momentumScore: 95,
+    momentumLabel: `Volume de Rompimento: ${fpRes.breakoutInfo?.volumeRatioPct || 100}% da Média Institucional`,
     momentumDir: isCall ? 'call' : isPut ? 'put' : 'neutral',
     volatilityScore: 95,
-    volatilityLabel: 'Zonas Institucionais Confirmadas (Caixas Brancas)',
+    volatilityLabel: `Delta de Fluxo: ${fpRes.lastFootprint ? (fpRes.lastFootprint.totalDelta > 0 ? `+${fpRes.lastFootprint.totalDelta}` : `${fpRes.lastFootprint.totalDelta}`) : '0'} Contratos Acumulados`,
     volatilityLevel: 'Steady',
     volatilityApproved: true,
     rsi: vectorRes.rsi,

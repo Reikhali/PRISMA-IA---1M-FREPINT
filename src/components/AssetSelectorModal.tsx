@@ -52,7 +52,12 @@ export function AssetSelectorModal({
               <TrendingUp className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Catálogo de Ativos OTC ({assets.length})</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">Catálogo de Ativos OTC ({assets.length})</h2>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                  Ctrl + V
+                </span>
+              </div>
               <p className="text-xs text-gray-400">Selecione o par para operar no modo 1 Minuto</p>
             </div>
           </div>

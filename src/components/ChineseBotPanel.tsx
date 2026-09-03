@@ -1,42 +1,36 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
-  Zap,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  RefreshCw,
   Clock,
   Shield,
-  Bot,
   Activity,
-  Sparkles,
-  AlertTriangle,
   Search,
   CheckCircle2,
-  XCircle,
-  HelpCircle,
+  TrendingUp,
+  TrendingDown,
+  AlertTriangle,
+  Zap,
+  Sparkles,
+  Bot,
+  Sliders,
+  Eye,
+  Radio,
+  Scan,
+  RefreshCw,
 } from 'lucide-react';
-import type { OtcAsset, Candle, Analysis, AccountInfo } from '@/types';
-import { evaluateMarketSignal, type StrategyMode, type UnifiedSignalResult } from '@/lib/analysis';
-import { playClickSound, playSignalTriggerSound } from '@/lib/sound';
+import type { OtcAsset, Candle, AccountInfo } from '@/types';
+import { playClickSound, playPreAnalysisSound, playSignalTriggerSound, speakVoiceNotification } from '@/lib/sound';
 import { CandleChart } from '@/components/CandleChart';
+import { MarketVoiceAssistant } from '@/components/MarketVoiceAssistant';
+import { evaluateSuperTrendRsiStrategy, type StrategySignal } from '@/lib/supertrend-rsi-engine';
 
 interface ChineseBotPanelProps {
   assets: OtcAsset[];
   selectedAsset: OtcAsset;
   onSelectAsset: (asset: OtcAsset) => void;
   candles: Candle[];
-  analysis: Analysis | null;
   account: AccountInfo;
-  isDemo: boolean;
-  onToggleAccountType: (demo: boolean) => void;
   onOpenSsidModal: () => void;
   onOpenAssetModal: () => void;
-  onExecuteOrder: (direction: 'call' | 'put', amount: number, strategy: string) => Promise<void>;
-  executing: boolean;
-  robotActive: boolean;
-  onToggleRobot: (active: boolean) => void;
-  currentSorosLevel: number;
 }
 
 const TIMEFRAMES = [
@@ -58,64 +52,33 @@ export function ChineseBotPanel({
   selectedAsset,
   onSelectAsset,
   candles,
-  analysis,
   account,
   onOpenSsidModal,
   onOpenAssetModal,
-  onExecuteOrder,
-  executing,
-  robotActive,
-  onToggleRobot,
-  currentSorosLevel,
 }: ChineseBotPanelProps) {
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('1M');
-  const [selectedStrategyMode, setSelectedStrategyMode] = useState<StrategyMode>('poc_volume_profile');
-  const [isScanning, setIsScanning] = useState<boolean>(false);
-  const [orderAmount, setOrderAmount] = useState<number>(10);
-  const [managementMode, setManagementMode] = useState<'fixed' | 'soros' | 'martingale'>('fixed');
-  const [showStrategyGuide, setShowStrategyGuide] = useState<boolean>(false);
-
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
-  const [scanStepText, setScanStepText] = useState<string>('');
-  
-  // Stored active signal: does NOT change unless deliberately scanned or automated by robot
-  const [analyzedSignal, setAnalyzedSignal] = useState<UnifiedSignalResult | null>(null);
-  const [signalAnalyzedAt, setSignalAnalyzedAt] = useState<string | null>(null);
-  const [signalNextEntryTime, setSignalNextEntryTime] = useState<string | null>(null);
-  const [signalEntryTimestamp, setSignalEntryTimestamp] = useState<number | null>(null);
-  const [signalExpireTimestamp, setSignalExpireTimestamp] = useState<number | null>(null);
-  const [signalLifecycleStatus, setSignalLifecycleStatus] = useState<'IDLE' | 'WAITING_ENTRY' | 'IN_TRADE' | 'FINISHED'>('IDLE');
-  const [lastFinishedSignalInfo, setLastFinishedSignalInfo] = useState<{ dir: string; time: string } | null>(null);
 
-  // Auto-Fire on Next Candle birth (:58s / :00s)
-  const [autoFireNextCandle, setAutoFireNextCandle] = useState<boolean>(true);
-  const [lastExecutedCandleTime, setLastExecutedCandleTime] = useState<string | null>(null);
+  // Estados do Robô de Análise, Leitura de Tela & Fluxo de Ticks
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [scanStatusText, setScanStatusText] = useState<string>('ESCANEANDO TELA DO GRÁFICO & TICKS...');
+  const [lastAnalysisTime, setLastAnalysisTime] = useState<string>('');
+  const [hasScannedManual, setHasScannedManual] = useState<boolean>(false);
+  const [autoVoiceAlerts, setAutoVoiceAlerts] = useState<boolean>(true);
+  const lastAutoAlertCandleTimeRef = useRef<number>(0);
 
-  const lastAutoAnalysisMinuteRef = useRef<number>(-1);
-  const lastAutoOrderMinuteRef = useRef<number>(-1);
+  // O sinal ativo de operação SÓ é gerado e fixado quando o usuário solicita a análise ou quando o robô detecta confluência automática
+  const [analyzedSignal, setAnalyzedSignal] = useState<StrategySignal | null>(null);
 
-  // Synchronized refs to eliminate React closure lag during millisecond triggers
-  const analyzedSignalRef = useRef<UnifiedSignalResult | null>(analyzedSignal);
-  analyzedSignalRef.current = analyzedSignal;
+  // Reseta a análise ao trocar de par de ativo para aguardar novo comando do operador
+  useEffect(() => {
+    setAnalyzedSignal(null);
+    setHasScannedManual(false);
+    setLastAnalysisTime('');
+    lastAutoAlertCandleTimeRef.current = 0;
+  }, [selectedAsset.id]);
 
-  const autoFireNextCandleRef = useRef<boolean>(autoFireNextCandle);
-  autoFireNextCandleRef.current = autoFireNextCandle;
-
-  const robotActiveRef = useRef<boolean>(robotActive);
-  robotActiveRef.current = robotActive;
-
-  const candlesRef = useRef<Candle[]>(candles);
-  candlesRef.current = candles;
-
-  const selectedStrategyModeRef = useRef<StrategyMode>(selectedStrategyMode);
-  selectedStrategyModeRef.current = selectedStrategyMode;
-
-  const effectiveStakeRef = useRef<number>(orderAmount);
-
-  const onExecuteOrderRef = useRef(onExecuteOrder);
-  onExecuteOrderRef.current = onExecuteOrder;
-
-  // Format Brasília Time (UTC-3)
+  // Formata horário oficial de Brasília (UTC-3)
   const formatBrtTime = useCallback((d: Date) => {
     return new Intl.DateTimeFormat('pt-BR', {
       timeZone: 'America/Sao_Paulo',
@@ -126,232 +89,135 @@ export function ChineseBotPanel({
     }).format(d);
   }, []);
 
-  // Update real-time Brasília clock
+  // Atualização do relógio a cada segundo
   useEffect(() => {
-    const updateCountdown = () => {
-      const now = new Date();
-      setCurrentTime(now);
-    };
-
-    updateCountdown();
-    const interval = setInterval(updateCountdown, 1000);
+    const updateTime = () => setCurrentTime(new Date());
+    updateTime();
+    const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
 
+  // Atalho de Teclado Global: Ctrl + V (ou Cmd + V) para abrir o catálogo de todos os ativos
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+        const activeTag = (document.activeElement?.tagName || '').toUpperCase();
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+        e.preventDefault();
+        playClickSound();
+        onOpenAssetModal();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onOpenAssetModal]);
+
   const brtTimeStr = formatBrtTime(currentTime);
+  const candleSeconds = currentTime.getSeconds();
+  const secondsToNextCandle = 60 - candleSeconds;
 
-  // Compute next candle entry time (in Brasília Timezone)
-  const nextCandleDate = new Date(currentTime.getTime() + (60 - currentTime.getSeconds()) * 1000);
-  const nextEntryStr = formatBrtTime(nextCandleDate);
+  // Métricas técnicas em tempo real (apenas para alimentar os medidores dos cards sem trocar o sinal de operação)
+  const realtimeMetrics = useMemo(() => {
+    return evaluateSuperTrendRsiStrategy(candles);
+  }, [candles]);
 
-  // Calculate dynamic stake amount based on Management Mode
-  const effectiveStake = React.useMemo(() => {
-    if (managementMode === 'soros') {
-      const payout = (selectedAsset.payout || 88) / 100;
-      if (currentSorosLevel === 1) return orderAmount;
-      if (currentSorosLevel === 2) return Number((orderAmount + orderAmount * payout).toFixed(2));
-      if (currentSorosLevel === 3) {
-        const lvl2 = orderAmount + orderAmount * payout;
-        return Number((lvl2 + lvl2 * payout).toFixed(2));
-      }
-      const lvl3 = orderAmount * Math.pow(1 + payout, 2);
-      return Number((lvl3 + lvl3 * payout).toFixed(2));
-    }
-    if (managementMode === 'martingale') {
-      return Number((orderAmount * 2.2).toFixed(2));
-    }
-    return orderAmount;
-  }, [managementMode, orderAmount, currentSorosLevel, selectedAsset.payout]);
-
-  effectiveStakeRef.current = effectiveStake;
-
-  // Clear signal when asset changes to avoid confusion
-  useEffect(() => {
-    setAnalyzedSignal(null);
-    setSignalLifecycleStatus('IDLE');
-    setSignalEntryTimestamp(null);
-    setSignalExpireTimestamp(null);
-  }, [selectedAsset.id]);
-
-  // Manual Trigger: User clicks "ANALISAR MERCADO AGORA"
-  const handleRescan = useCallback(() => {
+  // Disparo exclusivo do Botão de Análise: Captura a tela, lê os ticks, gera o sinal ESTÁVEL e FALA COM VOZ
+  const handleRunAnalysis = useCallback(() => {
+    if (isAnalyzing) return;
     playClickSound();
-    setIsScanning(true);
-    setLastFinishedSignalInfo(null);
-    setScanStepText('1/3: Sincronizando com Horário Oficial de Brasília (UTC-3)...');
+    playPreAnalysisSound();
+    setIsAnalyzing(true);
+    setScanStatusText('CAPTURANDO TELA DO GRÁFICO & CANDLESTICKS...');
 
+    // Etapa 1: Ingestão de ticks
     setTimeout(() => {
-      setScanStepText('2/3: Lendo Velas M1, Rejeição de Pavio e Linha da POC da Corretora...');
-    }, 250);
+      setScanStatusText('RECEBENDO FLUXO DE TICKS E VOLATILIDADE OTC...');
+    }, 400);
 
+    // Etapa 2: Processamento SuperTrend (10, 2) e RSI (9, 50)
     setTimeout(() => {
-      setScanStepText(
-        selectedStrategyMode === 'poc_volume_profile'
-          ? '3/3: Calculando Blocos de Volume Profile, Nível Amarelo da POC e Reteste...'
-          : '3/3: Calculando Clusters de Volume, POC Institucional, Delta e Zonas de Absorção...'
-      );
-    }, 500);
+      setScanStatusText('PROCESSANDO SUPERTREND (10, 2) + RSI (9, 50)...');
+    }, 850);
 
+    // Etapa 3: Consenso das 3 IAs, Fixação do Sinal e FALA DO ROBÔ POR VOZ
     setTimeout(() => {
-      setIsScanning(false);
-      setScanStepText('');
+      const computedSignal = evaluateSuperTrendRsiStrategy(candles);
+      setAnalyzedSignal(computedSignal);
+      setIsAnalyzing(false);
+      setHasScannedManual(true);
 
-      const now = new Date();
-      const currentSeconds = now.getSeconds();
-      const secondsToEntry = 60 - currentSeconds;
-      const entryTimestamp = now.getTime() + secondsToEntry * 1000;
-      const expireTimestamp = entryTimestamp + 60 * 1000; // 1M timeframe candle expiration
+      const nowStr = new Intl.DateTimeFormat('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).format(new Date());
 
-      // Evaluate analysis on closed candles for maximum precision
-      const evaluation = evaluateMarketSignal(candles, selectedTimeframe, selectedStrategyMode);
-      setAnalyzedSignal(evaluation);
-      setSignalAnalyzedAt(formatBrtTime(now));
+      setLastAnalysisTime(nowStr);
 
-      const nextEntryDate = new Date(entryTimestamp);
-      setSignalNextEntryTime(formatBrtTime(nextEntryDate));
-      setSignalEntryTimestamp(entryTimestamp);
-      setSignalExpireTimestamp(expireTimestamp);
-
-      if (evaluation.verdict !== 'NO_TRADE') {
-        setSignalLifecycleStatus('WAITING_ENTRY');
-        playSignalTriggerSound(evaluation.verdict === 'CALL' ? 'call' : 'put');
+      if (computedSignal.verdict === 'CALL') {
+        playSignalTriggerSound('call');
+        speakVoiceNotification(`Atenção! Sinal de Compra confirmado em M1 para ${selectedAsset.label}.`);
+      } else if (computedSignal.verdict === 'PUT') {
+        playSignalTriggerSound('put');
+        speakVoiceNotification(`Atenção! Sinal de Venda confirmado em M1 para ${selectedAsset.label}.`);
       } else {
-        setSignalLifecycleStatus('IDLE');
+        playClickSound();
+        speakVoiceNotification(`Mercado sem confluência para ${selectedAsset.label}. Proteção ativada.`);
       }
-    }, 750);
-  }, [candles, selectedTimeframe, selectedStrategyMode, formatBrtTime]);
+    }, 1300);
+  }, [isAnalyzing, candles, selectedAsset.label]);
 
-  // Reset Signal manually
-  const handleClearSignal = useCallback(() => {
-    playClickSound();
-    setAnalyzedSignal(null);
-    setSignalLifecycleStatus('IDLE');
-    setSignalEntryTimestamp(null);
-    setSignalExpireTimestamp(null);
-  }, []);
-
-  // Seconds remaining calculations
-  const nowMs = currentTime.getTime();
-  const secondsToNextCandle = 60 - currentTime.getSeconds();
-  const secondsToEntryCandle = signalEntryTimestamp
-    ? Math.max(0, Math.ceil((signalEntryTimestamp - nowMs) / 1000))
-    : secondsToNextCandle;
-  const secondsToTradeFinish = signalExpireTimestamp
-    ? Math.max(0, Math.ceil((signalExpireTimestamp - nowMs) / 1000))
-    : 0;
-
-  // Signal Lifecycle Timer & Auto-Reset when entered candle closes
+  // Alerta automático do robô: mesmo se o operador não clicou no botão de análise,
+  // quando as métricas confirmam um sinal (CALL ou PUT) na virada (:58s a :00s),
+  // o robô detecta sozinho, avisa por voz e fixa o sinal na tela.
   useEffect(() => {
-    if (!analyzedSignal || analyzedSignal.verdict === 'NO_TRADE' || !signalEntryTimestamp || !signalExpireTimestamp) {
-      return;
-    }
+    if (!autoVoiceAlerts || isAnalyzing) return;
+    if (candles.length < 15) return;
 
-    const now = Date.now();
+    const lastCandle = candles[candles.length - 1];
+    if (!lastCandle) return;
 
-    // 1. If we are before the entry timestamp: WAITING_ENTRY
-    if (now < signalEntryTimestamp) {
-      if (signalLifecycleStatus !== 'WAITING_ENTRY') {
-        setSignalLifecycleStatus('WAITING_ENTRY');
-      }
-    }
-    // 2. If we are within the trade candle (between entry and expiration): IN_TRADE
-    else if (now >= signalEntryTimestamp && now < signalExpireTimestamp) {
-      if (signalLifecycleStatus !== 'IN_TRADE') {
-        setSignalLifecycleStatus('IN_TRADE');
-      }
-    }
-    // 3. When the entered candle FINISHES (now >= signalExpireTimestamp): RESET SIGNAL!
-    else if (now >= signalExpireTimestamp) {
-      setLastFinishedSignalInfo({
-        dir: analyzedSignal.verdictWord,
-        time: formatBrtTime(new Date(signalExpireTimestamp)),
-      });
-      setSignalLifecycleStatus('FINISHED');
-      setAnalyzedSignal(null);
-      setSignalEntryTimestamp(null);
-      setSignalExpireTimestamp(null);
-    }
-  }, [currentTime, analyzedSignal, signalEntryTimestamp, signalExpireTimestamp, signalLifecycleStatus, formatBrtTime]);
+    // Dispara apenas no momento decisivo da virada de vela (:58s ou :00s)
+    if (candleSeconds >= 58 || candleSeconds === 0) {
+      if (lastAutoAlertCandleTimeRef.current === lastCandle.time) return;
 
-  // High-Precision Broker Execution Engine (matching IQ Option / Bullex API WebSocket timing)
-  useEffect(() => {
-    const autoInterval = setInterval(() => {
-      const now = new Date();
-      const sec = now.getSeconds();
-      const minute = now.getMinutes() + now.getHours() * 60;
+      if (realtimeMetrics.verdict === 'CALL' || realtimeMetrics.verdict === 'PUT') {
+        lastAutoAlertCandleTimeRef.current = lastCandle.time;
+        setAnalyzedSignal(realtimeMetrics);
+        setHasScannedManual(true);
 
-      // 1. Robot Auto-Scan at :58s of current candle
-      if (robotActiveRef.current && sec >= 58 && lastAutoAnalysisMinuteRef.current !== minute) {
-        lastAutoAnalysisMinuteRef.current = minute;
-        const evaluation = evaluateMarketSignal(candlesRef.current, selectedTimeframe, selectedStrategyModeRef.current);
-        setAnalyzedSignal(evaluation);
-        setSignalAnalyzedAt(formatBrtTime(now));
+        const nowStr = new Intl.DateTimeFormat('pt-BR', {
+          timeZone: 'America/Sao_Paulo',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }).format(new Date());
 
-        const secondsToEntry = 60 - sec;
-        const entryTimestamp = now.getTime() + (secondsToEntry <= 0 ? 60 : secondsToEntry) * 1000;
-        const expireTimestamp = entryTimestamp + 60 * 1000;
+        setLastAnalysisTime(`${nowStr} (Auto)`);
 
-        const nextEntry = new Date(entryTimestamp);
-        setSignalNextEntryTime(formatBrtTime(nextEntry));
-        setSignalEntryTimestamp(entryTimestamp);
-        setSignalExpireTimestamp(expireTimestamp);
-
-        if (evaluation.verdict !== 'NO_TRADE') {
-          setSignalLifecycleStatus('WAITING_ENTRY');
+        if (realtimeMetrics.verdict === 'CALL') {
+          playSignalTriggerSound('call');
+          speakVoiceNotification(`Alerta automático do robô! Confluência de Compra detectada em ${selectedAsset.label} para a próxima vela.`);
+        } else {
+          playSignalTriggerSound('put');
+          speakVoiceNotification(`Alerta automático do robô! Confluência de Venda detectada em ${selectedAsset.label} para a próxima vela.`);
         }
       }
+    }
+  }, [candleSeconds, autoVoiceAlerts, isAnalyzing, candles, realtimeMetrics, selectedAsset.label]);
 
-      // 2. Automated Trade Execution at Candle Birth (:59s - :00s)
-      // Fires if robot is active OR if manual signal has autoFireNextCandle enabled
-      const shouldAutoExecute =
-        robotActiveRef.current ||
-        (autoFireNextCandleRef.current && analyzedSignalRef.current && analyzedSignalRef.current.verdict !== 'NO_TRADE');
-
-      if (shouldAutoExecute && sec === 0 && lastAutoOrderMinuteRef.current !== minute) {
-        lastAutoOrderMinuteRef.current = minute;
-        const currentSig = analyzedSignalRef.current;
-
-        if (currentSig && currentSig.verdict !== 'NO_TRADE') {
-          const dir = currentSig.verdict === 'CALL' ? 'call' : 'put';
-          playSignalTriggerSound(dir);
-
-          const stratLabel =
-            selectedStrategyModeRef.current === 'poc_volume_profile'
-              ? `POC_VOLUME_PROFILE (${currentSig.verdictWord})`
-              : `ORDER_FLOW_FOOTPRINT (${currentSig.verdictWord})`;
-
-          onExecuteOrderRef.current(dir, effectiveStakeRef.current, stratLabel);
-          setLastExecutedCandleTime(formatBrtTime(now));
-          setSignalLifecycleStatus('IN_TRADE');
-        }
-      }
-    }, 200);
-
-    return () => clearInterval(autoInterval);
-  }, [formatBrtTime]);
-
-  // Filter top quick pairs (all assets are OTC)
-  const quickPairs = React.useMemo(() => {
+  // 10 ativos de acesso rápido
+  const quickPairs = useMemo(() => {
     return assets.slice(0, 10);
   }, [assets]);
 
-  const handleManualTrade = async () => {
-    if (!analyzedSignal || analyzedSignal.verdict === 'NO_TRADE') return;
-    const dir = analyzedSignal.verdict === 'CALL' ? 'call' : 'put';
-    playSignalTriggerSound(dir);
-    const stratLabel =
-      selectedStrategyMode === 'poc_volume_profile'
-        ? `POC & VOLUME PROFILE (${analyzedSignal.verdictWord})`
-        : `ORDER FLOW FOOTPRINT (${analyzedSignal.verdictWord})`;
-    await onExecuteOrder(dir, effectiveStake, stratLabel);
-  };
-
   const payoutPct = selectedAsset.payout || 88;
-  const potentialProfit = (effectiveStake * (payoutPct / 100)).toFixed(2);
+  const precision = selectedAsset.precision || 5;
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-6">
-      {/* Hero Banner */}
+      {/* Top Hero Banner */}
       <div
         id="prisma-ia-vector-hero-card"
         className="relative overflow-hidden rounded-2xl border border-emerald-500/30 p-5 md:p-6 bg-gradient-to-b from-[#060c14]/98 to-[#020509]/98 shadow-2xl shadow-emerald-950/40 backdrop-blur-xl"
@@ -383,39 +249,47 @@ export function ChineseBotPanel({
                     MODO VECTOR OTC
                   </span>
                 </h1>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                  CONSENSO 3 VOTOS
-                </span>
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold uppercase tracking-wider bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
-                  OPTGO BROKER
+                  CONSENSO IA 3x
+                </span>
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-black uppercase tracking-wider bg-cyan-500/15 text-cyan-300 border border-cyan-500/40">
+                  CLAUDE + CHATGPT + GEMINI
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1 font-mono flex items-center gap-1.5 flex-wrap">
-                <span className="text-emerald-400">Tendência EMA (9, 21)</span>
+                <span className="text-white font-semibold">{selectedAsset.label}</span>
                 <span>•</span>
-                <span className="text-emerald-300">Momento RSI (14)</span>
-                <span>•</span>
-                <span className="text-emerald-400">Filtro ATR</span>
+                <span className="text-emerald-400">Payout {payoutPct}%</span>
                 <span>•</span>
                 <span className="text-slate-300">trade.optgobroker.com/traderoom</span>
+                <span>•</span>
+                <span className="text-emerald-300">Brasília: {brtTimeStr}</span>
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {/* Botão de Análise de Gráfico & Ticks com IA */}
             <button
               type="button"
-              onClick={() => setShowStrategyGuide(!showStrategyGuide)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-xs font-mono font-bold hover:bg-emerald-900/60 transition-colors"
+              id="btn-analisar-mercado-topo"
+              onClick={handleRunAnalysis}
+              disabled={isAnalyzing}
+              className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-mono font-black border transition-all bg-gradient-to-r from-emerald-400 via-teal-300 to-emerald-400 text-slate-950 hover:brightness-110 shadow-lg shadow-emerald-500/25 active:scale-95 cursor-pointer disabled:opacity-70"
+              title="Captura a tela do gráfico, analisa os ticks em tempo real e emite o sinal"
             >
-              <HelpCircle className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{showStrategyGuide ? 'Ocultar Estratégia' : 'Como Funciona os 3 Votos'}</span>
+              {isAnalyzing ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>ANALISANDO TICKS...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-slate-950 animate-pulse" />
+                  <span>ANALISAR MERCADO (IA)</span>
+                </>
+              )}
             </button>
-
-            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/60 border border-emerald-500/30 text-slate-200 text-xs font-mono font-semibold">
-              <Activity className="w-3.5 h-3.5 text-emerald-400" />
-              <span>148 ATIVOS OTC</span>
-            </div>
 
             <button
               type="button"
@@ -427,939 +301,424 @@ export function ChineseBotPanel({
               }`}
             >
               <Shield className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{account.connected ? 'SSID OPTGO ATIVO' : 'CONECTAR SSID OPTGO'}</span>
+              <span>{account.connected ? 'SSID OPTGO CONECTADO' : 'CONECTAR SSID OPTGO'}</span>
             </button>
           </div>
         </div>
-
-        {/* Strategy Guide Drawer */}
-        {showStrategyGuide && (
-          <div className="mt-4 pt-4 border-t border-emerald-500/20 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
-            <div className="bg-[#020509]/90 border border-amber-500/30 rounded-xl p-3 space-y-1">
-              <span className="text-amber-400 font-bold block uppercase">🟡 1. POC &amp; Volume Profile (Linha Amarela &amp; Reteste)</span>
-              <p className="text-slate-300">
-                Calcula o nível de maior volume negociado da sessão (Linha Amarela da POC). Gera sinal de CALL no reteste comprador ou PUT na rejeição de topo com confirmação de blocos de perfil.
-              </p>
-            </div>
-
-            <div className="bg-[#020509]/90 border border-emerald-500/30 rounded-xl p-3 space-y-1">
-              <span className="text-emerald-400 font-bold block uppercase">📊 2. Footprint Order Flow (Clusters &amp; Delta)</span>
-              <p className="text-slate-300">
-                Mapeia os clusters de volume bid/ask em cada nível de preço da vela e calcula a absorção nas zonas institucionais (caixas brancas) para antecipar a reversão de fluxo.
-              </p>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* Main 2-Column Application Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Setup & Analysis Parameters */}
-        <div id="chinese-bot-controls" className="lg:col-span-6 space-y-4 bg-[#050a12]/95 border border-emerald-500/20 rounded-2xl p-5 shadow-xl backdrop-blur-md">
-          <div className="border-b border-emerald-500/20 pb-3 flex items-center justify-between">
-            <div>
-              <span className="text-[10px] font-mono font-bold text-emerald-400 uppercase tracking-widest block mb-0.5">
-                [ PAINEL OPERACIONAL ]
-              </span>
-              <h2 className="text-lg font-black text-white font-mono tracking-tight">Parâmetros do Sinal Vector</h2>
-            </div>
-            <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/30">
-              M1 OTC ENGINE
+      {/* Box Explicativo da Estratégia do Vídeo */}
+      <div className="bg-[#050b14]/95 border border-emerald-500/25 rounded-2xl p-4 md:p-5 shadow-xl backdrop-blur-md">
+        {/* Barra de Controle de Análise & Varredura de Ticks */}
+        <div className="mb-4 p-3 bg-black/60 border border-emerald-500/30 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 font-mono">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <button
+              type="button"
+              id="btn-analisar-mercado-painel"
+              onClick={handleRunAnalysis}
+              disabled={isAnalyzing}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black transition-all bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-500 text-slate-950 hover:brightness-110 shadow-lg shadow-emerald-500/30 active:scale-95 cursor-pointer disabled:opacity-75"
+            >
+              {isAnalyzing ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+                  <span>LENDO GRÁFICO &amp; TICKS EM TEMPO REAL...</span>
+                </>
+              ) : (
+                <>
+                  <Eye className="w-4 h-4 text-slate-950" />
+                  <span>{analyzedSignal ? 'REANALISAR MERCADO AGORA (IA)' : 'ANALISAR MERCADO AGORA (IA)'}</span>
+                </>
+              )}
+            </button>
+
+            <span className="text-[11px] text-slate-400">
+              {analyzedSignal
+                ? 'Sinal fixado e validado. Não altera sozinho a cada segundo.'
+                : 'Clique para o robô ler o gráfico, escanear os ticks e falar o sinal.'}
             </span>
           </div>
 
-          {/* Step 1: Broker Integration Status */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-md bg-emerald-400 text-black font-mono font-black text-xs flex items-center justify-center">
-                  1
-                </span>
-                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Corretora de Operação</span>
-              </div>
-              <span className="text-[10px] font-mono font-bold uppercase bg-emerald-500/15 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30">
-                {account.connected ? 'Optgo Broker Sincronizada' : 'Modo Simulado / SSID Disponível'}
+          <div className="text-[11px] text-slate-400 flex items-center gap-2.5 flex-wrap">
+            <span className="flex items-center gap-1.5">
+              <Scan className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Status IA:</span>
+              <strong className="text-white">
+                {isAnalyzing ? 'Lendo gráfico & ticks...' : analyzedSignal ? 'Análise Concluída' : 'Pronto para Analisar'}
+              </strong>
+            </span>
+            {lastAnalysisTime && (
+              <>
+                <span>•</span>
+                <span className="text-emerald-300">Última análise: {lastAnalysisTime} BRT</span>
+              </>
+            )}
+            {hasScannedManual && (
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] border border-emerald-500/30 font-bold">
+                Sinal Estável
               </span>
-            </div>
+            )}
+          </div>
+        </div>
 
-            {/* Official Broker Card */}
-            <div className="bg-[#020509]/90 border border-emerald-500/20 rounded-xl p-3.5 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 flex items-center justify-center font-mono font-black text-sm shadow-inner">
-                  OG
-                </div>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-emerald-500/20 pb-4 mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-sky-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+              <Bot className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-black text-white font-mono tracking-tight">
+                  ESTRATÉGIA SUPERTREND (10, 2) + RSI (9, 50)
+                </h2>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold uppercase">
+                  M1 · EXPIRAÇÃO 1M
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 font-mono mt-0.5">
+                Consenso de 3 IAs. O sinal é gerado exclusivamente quando você clica em Analisar Mercado e fala em voz alta na tela.
+              </p>
+            </div>
+          </div>
+
+          {/* Veredicto do Sinal (Fixo pós-análise, sem ficar pulando) */}
+          <div className="flex items-center gap-3">
+            {analyzedSignal === null ? (
+              <div className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-900/80 flex items-center gap-3 font-mono">
+                <Bot className="w-5 h-5 text-emerald-400 animate-pulse" />
                 <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-bold text-white font-mono">OPTGO Broker (trade.optgobroker.com)</span>
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <div className="text-[10px] text-slate-400 font-bold uppercase">ROBÔ EM ESPERA</div>
+                  <div className="text-sm font-black text-emerald-400">CLIQUE EM 'ANALISAR MERCADO'</div>
+                </div>
+              </div>
+            ) : analyzedSignal.verdict === 'CALL' ? (
+              <div className="px-4 py-2 rounded-xl border border-emerald-500/70 bg-emerald-950/90 text-emerald-300 shadow-lg shadow-emerald-950/60 flex items-center gap-2.5 font-mono">
+                <TrendingUp className="w-6 h-6 text-emerald-400 animate-bounce" />
+                <div>
+                  <div className="text-[10px] text-emerald-400 font-bold flex items-center gap-1.5">
+                    <span>SINAL GERADO PELA IA</span>
+                    <span className="text-slate-400">({lastAnalysisTime})</span>
                   </div>
-                  <p className="text-[11px] text-slate-400 font-mono">
-                    ID: {account.id} · {account.name} · Payouts até 98%
-                  </p>
+                  <div className="text-base font-black text-white">COMPRA (CALL) M1</div>
                 </div>
               </div>
-
-              <button
-                type="button"
-                onClick={onOpenSsidModal}
-                className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-mono font-bold border border-emerald-500/30 transition-colors"
-              >
-                {account.connected ? 'Gerenciar SSID' : 'Conectar SSID'}
-              </button>
-            </div>
-          </div>
-
-          {/* Step 2: Market Type */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-md bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center">
-                  2
-                </span>
-                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Tipo de Mercado</span>
-              </div>
-              <span className="text-[10px] font-mono uppercase bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 border border-emerald-500/40 font-bold">
-                VECTOR OTC 24/7 ATIVO
-              </span>
-            </div>
-
-            <div className="bg-[#020509]/90 border border-emerald-500/20 rounded-xl p-3 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+            ) : analyzedSignal.verdict === 'PUT' ? (
+              <div className="px-4 py-2 rounded-xl border border-rose-500/70 bg-rose-950/90 text-rose-300 shadow-lg shadow-rose-950/60 flex items-center gap-2.5 font-mono">
+                <TrendingDown className="w-6 h-6 text-rose-400 animate-bounce" />
                 <div>
-                  <span className="text-xs font-bold text-white font-mono block">OTC (24h / Finais de Semana / Dias Úteis)</span>
-                  <span className="text-[11px] text-slate-400 font-mono">Todos os ativos operados pelo robô são OTC da OPTGO Broker</span>
+                  <div className="text-[10px] text-rose-400 font-bold flex items-center gap-1.5">
+                    <span>SINAL GERADO PELA IA</span>
+                    <span className="text-slate-400">({lastAnalysisTime})</span>
+                  </div>
+                  <div className="text-base font-black text-white">VENDA (PUT) M1</div>
                 </div>
               </div>
-              <span className="text-[10px] font-mono font-bold uppercase bg-emerald-950/80 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/30 whitespace-nowrap">
-                148 ATIVOS
-              </span>
+            ) : (
+              <div className="px-4 py-2 rounded-xl border border-amber-500/60 bg-amber-950/80 text-amber-300 flex items-center gap-2.5 font-mono">
+                <AlertTriangle className="w-6 h-6 text-amber-400" />
+                <div>
+                  <div className="text-[10px] text-amber-400 font-bold flex items-center gap-1.5">
+                    <span>SEM CONFLUÊNCIA</span>
+                    <span className="text-slate-400">({lastAnalysisTime})</span>
+                  </div>
+                  <div className="text-sm font-black text-slate-200">PROTEÇÃO (NO TRADE)</div>
+                </div>
+              </div>
+            )}
+
+            {/* Virada da vela */}
+            <div className="bg-black/60 border border-emerald-500/30 px-3 py-2 rounded-xl text-center font-mono">
+              <div className="text-[10px] text-slate-400">VIRADA M1</div>
+              <div className="text-base font-black text-emerald-400">:{String(candleSeconds).padStart(2, '0')}s</div>
+              <div className="text-[9px] text-slate-500">em {secondsToNextCandle}s</div>
             </div>
           </div>
+        </div>
 
-          {/* Step 3: Asset / Currency Pair */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-md bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center">
-                  3
-                </span>
-                <span className="text-xs font-bold text-white uppercase tracking-wider">Ativo da Corretora</span>
-              </div>
-              <button
-                type="button"
-                onClick={onOpenAssetModal}
-                className="text-[11px] font-bold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"
-              >
-                <Search className="w-3 h-3" />
-                <span>Ver todos 148 Ativos ({payoutPct}%)</span>
-              </button>
-            </div>
-
-            <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1">
-              {quickPairs.map((asset) => {
-                const isSelected = selectedAsset.id === asset.id;
-                return (
-                  <button
-                    key={asset.id}
-                    type="button"
-                    onClick={() => {
-                      playClickSound();
-                      onSelectAsset(asset);
-                      setAnalyzedSignal(null);
-                    }}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border flex items-center gap-1.5 ${
-                      isSelected
-                        ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-sm font-bold'
-                        : 'bg-slate-900/70 text-slate-300 border-white/10 hover:border-emerald-500/30 hover:text-white'
-                    }`}
-                  >
-                    <span>{asset.label}</span>
-                    <span
-                      className={`text-[10px] px-1 py-0.2 rounded font-mono ${
-                        isSelected ? 'bg-slate-950/30 text-slate-950' : 'bg-emerald-500/10 text-emerald-400'
-                      }`}
-                    >
-                      {asset.payout || 88}%
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Step 4: Strategy Mode Selection (POC + FOOTPRINT) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-md bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center">
-                  4
-                </span>
-                <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">Estratégia de Sinal</span>
-              </div>
-              <span className="text-[10px] font-mono uppercase bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 border border-emerald-500/40 font-bold">
-                {selectedStrategyMode === 'poc_volume_profile'
-                  ? '🟡 POC & VOLUME PROFILE'
-                  : '📊 ORDER FLOW CLUSTERS'}
+        {/* Os 4 Cards de Filtros da Estratégia */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Card 1: SuperTrend (10, 2.0) */}
+          <div
+            className={`p-3.5 rounded-xl border font-mono transition-all ${
+              realtimeMetrics.superTrendDirection === 'BULLISH'
+                ? 'bg-emerald-950/20 border-emerald-500/40 text-emerald-300'
+                : 'bg-rose-950/20 border-rose-500/40 text-rose-300'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <Sliders className="w-3.5 h-3.5" />
+                1. SuperTrend (10, 2.0)
               </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {/* Option 1: POC & Volume Profile */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('poc_volume_profile');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-3.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'poc_volume_profile'
-                    ? 'bg-amber-500/20 border-amber-400 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/50'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-amber-500/30'
+              <span
+                className={`text-[10px] font-black px-1.5 py-0.5 rounded ${
+                  realtimeMetrics.superTrendDirection === 'BULLISH'
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'bg-rose-500/20 text-rose-400'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold font-mono text-amber-400 flex items-center gap-1.5">
-                    🟡 POC &amp; PERFIL
-                  </span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-400 text-black font-black">M1 FOTO</span>
-                </div>
-                <p className="text-[11px] text-slate-300 font-mono leading-tight">
-                  Reteste na Linha Amarela da POC + Blocos de Volume Profile
-                </p>
-              </button>
+                {realtimeMetrics.superTrendDirection === 'BULLISH' ? 'ALTA (VERDE)' : 'BAIXA (VERMELHO)'}
+              </span>
+            </div>
+            <div className="text-lg font-black text-white">
+              {realtimeMetrics.superTrendValue > 0 ? realtimeMetrics.superTrendValue.toFixed(precision) : 'Calculando...'}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {realtimeMetrics.superTrendDirection === 'BULLISH'
+                ? 'Linha verde abaixo das velas atuando como suporte dinâmico.'
+                : 'Linha vermelha acima das velas atuando como resistência dinâmica.'}
+            </p>
+          </div>
 
-              {/* Option 2: Footprint Order Flow */}
-              <button
-                type="button"
-                onClick={() => {
-                  playClickSound();
-                  setSelectedStrategyMode('footprint_orderflow');
-                  setAnalyzedSignal(null);
-                }}
-                className={`p-3.5 rounded-xl text-left border transition-all ${
-                  selectedStrategyMode === 'footprint_orderflow'
-                    ? 'bg-emerald-500/20 border-emerald-400 shadow-md shadow-emerald-500/20 ring-1 ring-emerald-400/50'
-                    : 'bg-[#020509]/80 border-white/10 hover:border-emerald-500/30'
+          {/* Card 2: Momentum RSI (9) com Linha 50 */}
+          <div
+            className={`p-3.5 rounded-xl border font-mono transition-all ${
+              realtimeMetrics.rsiValue > 50
+                ? 'bg-sky-950/25 border-sky-500/40 text-sky-300'
+                : 'bg-indigo-950/25 border-indigo-500/40 text-indigo-300'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5" />
+                2. Momentum RSI (9)
+              </span>
+              <span
+                className={`text-[10px] font-black px-1.5 py-0.5 rounded ${
+                  realtimeMetrics.rsiValue > 50
+                    ? 'bg-sky-500/20 text-sky-400'
+                    : 'bg-indigo-500/20 text-indigo-400'
                 }`}
               >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-bold font-mono text-emerald-400 flex items-center gap-1.5">
-                    📊 ORDER FLOW
-                  </span>
-                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-400 text-black font-black">CLUSTERS</span>
-                </div>
-                <p className="text-[11px] text-slate-300 font-mono leading-tight">
-                  Clusters de Volume M1 + Delta e Zonas de Absorção
-                </p>
-              </button>
-            </div>
-          </div>
-
-          {/* Step 5: Timeframe */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-md bg-emerald-400 text-slate-950 font-black text-xs flex items-center justify-center">
-                  5
-                </span>
-                <span className="text-xs font-bold text-white uppercase tracking-wider">Tempo de Vela</span>
-              </div>
-              <span className="text-[10px] font-mono bg-slate-900/80 px-2 py-0.5 rounded text-emerald-400 border border-white/5">
-                {selectedTimeframe}
+                {realtimeMetrics.rsiValue > 50 ? '> 50 COMPRADOR' : '< 50 VENDEDOR'}
               </span>
             </div>
-
-            <div className="grid grid-cols-6 sm:grid-cols-11 gap-1">
-              {TIMEFRAMES.map((tf) => {
-                const isSelected = selectedTimeframe === tf.id;
-                return (
-                  <button
-                    key={tf.id}
-                    type="button"
-                    onClick={() => {
-                      playClickSound();
-                      setSelectedTimeframe(tf.id);
-                      setAnalyzedSignal(null);
-                    }}
-                    className={`py-1.5 rounded-md text-xs font-bold transition-all border text-center ${
-                      isSelected
-                        ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20'
-                        : 'bg-slate-900/70 text-slate-300 border-white/10 hover:border-emerald-500/30 hover:text-white'
-                    }`}
-                  >
-                    {tf.label}
-                  </button>
-                );
-              })}
+            <div className="text-lg font-black text-white">
+              {realtimeMetrics.rsiValue.toFixed(1)} <span className="text-xs text-slate-400 font-normal">/ 100</span>
             </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Linha central 50 é o divisor: &gt;50 confirma alta e &lt;50 confirma baixa.
+            </p>
           </div>
 
-          {/* Step 6: Big Analysis Action Trigger */}
-          <div className="pt-2">
-            <button
-              type="button"
-              id="analyze-market-now-btn"
-              onClick={handleRescan}
-              disabled={isScanning}
-              className="w-full group relative overflow-hidden py-4 px-4 rounded-xl bg-gradient-to-r from-emerald-500 via-emerald-400 to-emerald-500 hover:from-emerald-400 hover:to-emerald-300 text-black font-mono font-black text-sm uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/30 active:scale-[0.98] transition-all cursor-pointer"
-            >
-              <Zap className={`w-5 h-5 fill-black ${isScanning ? 'animate-bounce' : 'group-hover:scale-110'} transition-transform`} />
-              <span>
-                {isScanning
-                  ? 'ANALISANDO OS SINAIS DO MERCADO...'
-                  : `ANALISAR MERCADO AGORA (${selectedAsset.label})`}
+          {/* Card 3: Filtro Anti-Exaustão (30 a 70) */}
+          <div
+            className={`p-3.5 rounded-xl border font-mono transition-all ${
+              realtimeMetrics.rsiValue >= 70 || realtimeMetrics.rsiValue <= 30
+                ? 'bg-amber-950/30 border-amber-500/50 text-amber-300'
+                : 'bg-slate-900/60 border-slate-800 text-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5" />
+                3. Filtro de Extremos
               </span>
-            </button>
-            <p className="text-[11px] text-center text-slate-400 mt-1.5 font-mono">
-              Horário Oficial de Brasília: <strong className="text-emerald-400">{brtTimeStr}</strong> · Entrada Próxima Vela: <strong className="text-white">{nextEntryStr}</strong>
+              <span
+                className={`text-[10px] font-black px-1.5 py-0.5 rounded ${
+                  realtimeMetrics.rsiValue >= 70
+                    ? 'bg-red-500/20 text-red-400'
+                    : realtimeMetrics.rsiValue <= 30
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'bg-emerald-500/10 text-emerald-300'
+                }`}
+              >
+                {realtimeMetrics.rsiValue >= 70
+                  ? 'SOBRECOMPRA (≥70)'
+                  : realtimeMetrics.rsiValue <= 30
+                  ? 'SOBREVENDA (≤30)'
+                  : 'FAIXA SEGURA (30-70)'}
+              </span>
+            </div>
+            <div className="text-lg font-black text-white">
+              {realtimeMetrics.rsiValue >= 70 || realtimeMetrics.rsiValue <= 30 ? (
+                <span className="text-amber-400">BLOQUEADO</span>
+              ) : (
+                <span className="text-emerald-400">AUTORIZADO</span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Evita compras no topo (&gt;70) e vendas no fundo (&lt;30) contra exaustão.
+            </p>
+          </div>
+
+          {/* Card 4: Gatilho de Entrada & Qualidade da Vela */}
+          <div
+            className={`p-3.5 rounded-xl border font-mono transition-all ${
+              analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE'
+                ? 'bg-emerald-950/30 border-emerald-500/50 text-emerald-300'
+                : 'bg-slate-900/60 border-slate-800 text-slate-300'
+            }`}
+          >
+            <div className="flex items-center justify-between text-xs mb-1.5">
+              <span className="font-bold flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                4. Gatilho de Virada
+              </span>
+              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                {realtimeMetrics.candleQuality}
+              </span>
+            </div>
+            <div className="text-lg font-black text-white">
+              {analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE' ? (
+                <span className="text-emerald-400">ENTRADA :00s</span>
+              ) : (
+                <span className="text-slate-400">STANDBY</span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Entrada precisa na abertura da vela de M1 (:00s) com vela expressiva.
             </p>
           </div>
         </div>
 
-        {/* Right Column: AI Verdict Signal Card & Broker Execution */}
-        <div id="prisma-vector-verdict-card" className="lg:col-span-6 space-y-4">
-          <div className="bg-[#050a12]/95 border border-emerald-500/30 rounded-2xl p-5 shadow-2xl relative overflow-hidden backdrop-blur-xl">
-            {/* Top Bar */}
-            <div className="flex items-center justify-between gap-4 pb-3 border-b border-emerald-500/20">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-black text-white font-mono">{selectedAsset.label}</span>
-                  <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                    {selectedTimeframe}
-                  </span>
-                </div>
-                <span className="text-xs text-slate-400 font-mono flex items-center gap-1.5 mt-0.5">
-                  <span>Payout {payoutPct}%</span>
-                  <span>•</span>
-                  <span>OPTGO Broker</span>
-                  <span>•</span>
-                  <span className="text-emerald-400 font-bold">{brtTimeStr} BRT</span>
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleRescan}
-                  disabled={isScanning}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#020509] hover:bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-xs font-mono font-bold transition-all active:scale-95"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin text-emerald-400' : ''}`} />
-                  <span>Analisar Novamente</span>
-                </button>
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 text-[10px] font-mono font-black uppercase">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>3 VOTOS CONECTADOS</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Scanning State Animation */}
-            {isScanning ? (
-              <div className="py-12 flex flex-col items-center justify-center text-center space-y-4">
-                <div className="relative w-20 h-20 flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-full border-4 border-emerald-900/40 border-t-emerald-400 animate-spin" />
-                  <div className="absolute inset-2 rounded-full border-2 border-emerald-500/20 border-b-emerald-300 animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
-                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/50 text-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-500/30">
-                    <Zap className="w-5 h-5 fill-emerald-400" />
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-base font-black text-white font-mono">{scanStepText || 'Processando Consenso dos 3 Votos...'}</h3>
-                  <p className="text-xs text-emerald-400 mt-1 font-mono">
-                    Horário de Brasília: {brtTimeStr} · Conectado ao Feed OPTGO
-                  </p>
-                </div>
-              </div>
-            ) : analyzedSignal ? (
-              /* Analyzed Verdict Display (Active only while waiting for entry and during the entered candle) */
-              <div className="py-3 space-y-4">
-                {/* Signal Timing & Lifecycle Status Bar */}
-                <div className={`border rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 font-mono text-xs ${
-                  signalLifecycleStatus === 'IN_TRADE'
-                    ? 'bg-amber-950/40 border-amber-500/50 shadow-lg shadow-amber-950/30'
-                    : 'bg-[#020509]/90 border-emerald-500/30'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <Clock className={`w-4 h-4 ${signalLifecycleStatus === 'IN_TRADE' ? 'text-amber-400 animate-spin' : 'text-emerald-400 animate-pulse'}`} />
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-slate-300 font-bold">
-                          {signalLifecycleStatus === 'IN_TRADE' ? 'EM OPERAÇÃO NA VELA:' : 'ENTRADA NA PRÓXIMA VELA:'}
-                        </span>
-                        <strong className="text-white text-sm bg-black/60 px-2 py-0.5 rounded border border-white/10">
-                          {signalNextEntryTime || nextEntryStr}
-                        </strong>
-                      </div>
-                      <span className="text-[10px] text-slate-400">
-                        {signalLifecycleStatus === 'IN_TRADE'
-                          ? `⚡ Vela ativa! O sinal sumirá automaticamente em ${secondsToTradeFinish}s`
-                          : `⏳ Prepare sua entrada para a virada de vela em ${secondsToEntryCandle}s`}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div className={`px-2.5 py-1 rounded-md text-[11px] font-mono font-black uppercase flex items-center gap-1.5 ${
-                      signalLifecycleStatus === 'IN_TRADE'
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
-                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                    }`}>
-                      <span className={`w-2 h-2 rounded-full ${signalLifecycleStatus === 'IN_TRADE' ? 'bg-amber-400' : 'bg-emerald-400'} animate-ping`} />
-                      <span>{signalLifecycleStatus === 'IN_TRADE' ? `NA VELA (${secondsToTradeFinish}s)` : `ARMADO (${secondsToEntryCandle}s)`}</span>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleClearSignal}
-                      title="Resetar Sinal Agora"
-                      className="px-2 py-1 rounded bg-slate-900 hover:bg-rose-950/40 text-slate-400 hover:text-rose-300 border border-white/10 hover:border-rose-500/40 text-[10px] font-mono transition-all"
-                    >
-                      Resetar
-                    </button>
-                  </div>
-                </div>
-
-                {/* Big Verdict Badge */}
-                <div
-                  className={`p-5 rounded-2xl border text-center flex flex-col items-center justify-center transition-all ${
-                    analyzedSignal.verdict === 'CALL'
-                      ? 'bg-gradient-to-b from-emerald-950/60 to-[#020509] border-emerald-500/70 shadow-2xl shadow-emerald-500/20'
-                      : analyzedSignal.verdict === 'PUT'
-                        ? 'bg-gradient-to-b from-rose-950/60 to-[#020509] border-rose-500/70 shadow-2xl shadow-rose-500/20'
-                        : 'bg-gradient-to-b from-amber-950/40 to-[#020509] border-amber-500/50'
-                  }`}
-                >
-                  <div
-                    className={`w-14 h-14 rounded-full flex items-center justify-center mb-2 ${
-                      analyzedSignal.verdict === 'CALL'
-                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 shadow-lg shadow-emerald-500/30'
-                        : analyzedSignal.verdict === 'PUT'
-                          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/50 shadow-lg shadow-rose-500/30'
-                          : 'bg-amber-500/20 text-amber-400 border border-amber-500/50'
-                    }`}
-                  >
-                    {analyzedSignal.verdict === 'CALL' ? (
-                      <TrendingUp className="w-7 h-7 stroke-[3]" />
-                    ) : analyzedSignal.verdict === 'PUT' ? (
-                      <TrendingDown className="w-7 h-7 stroke-[3]" />
-                    ) : (
-                      <Minus className="w-7 h-7 stroke-[3]" />
-                    )}
-                  </div>
-
-                  <span
-                    className={`text-4xl md:text-5xl font-black font-mono tracking-tight ${
-                      analyzedSignal.verdict === 'CALL'
-                        ? 'text-emerald-400 drop-shadow-[0_0_25px_rgba(52,211,153,0.6)]'
-                        : analyzedSignal.verdict === 'PUT'
-                          ? 'text-rose-400 drop-shadow-[0_0_25px_rgba(244,63,94,0.6)]'
-                          : 'text-amber-400'
-                    }`}
-                  >
-                    {analyzedSignal.verdictWord}
-                  </span>
-
-                  <span className="text-xs font-mono font-bold uppercase tracking-widest text-slate-300 mt-1">
-                    {analyzedSignal.verdictSub}
-                  </span>
-
-                  {/* Auto-Reset Countdown Notice */}
-                  <div className="mt-3 px-3 py-1 rounded-full bg-black/60 border border-white/10 text-[11px] font-mono text-slate-300 flex items-center gap-1.5">
-                    <span className="text-amber-400">ℹ️</span>
-                    <span>
-                      {signalLifecycleStatus === 'IN_TRADE'
-                        ? `Vela em andamento: encerra e reseta o sinal em ${secondsToTradeFinish}s`
-                        : `Sinal ativo para a vela das ${signalNextEntryTime || nextEntryStr} (${secondsToEntryCandle}s para entrada)`}
-                    </span>
-                  </div>
-                </div>
-
-                {/* AI Confidence Bar */}
-                <div className="space-y-1.5 bg-[#020509]/80 p-3 rounded-xl border border-emerald-500/20">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-300 font-mono font-semibold flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                      Confiança da Confluência (Consenso dos 3 Votos)
-                    </span>
-                    <span className="text-sm font-black text-emerald-400 font-mono">{analyzedSignal.confidencePct}%</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-emerald-500/20">
-                    <div
-                      className="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-emerald-600 via-emerald-400 to-emerald-300"
-                      style={{ width: `${analyzedSignal.confidencePct}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* 4 Pillars Consensus Cards (Supertrend, CCI+RSI, Wick Rejection, Doji/Noise Filter) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                  {/* Pillar 1: Supertrend Duplo & EMAs */}
-                  <div className="bg-[#020509]/80 p-2.5 rounded-xl border border-emerald-500/20 space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400 font-mono flex items-center gap-1">
-                        <span>📈</span> Supertrend Duplo
-                      </span>
-                      <span
-                        className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded uppercase ${
-                          analyzedSignal.trendDir === 'call'
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : analyzedSignal.trendDir === 'put'
-                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                        }`}
-                      >
-                        {analyzedSignal.trendDir === 'call' ? 'ALTA (CALL)' : analyzedSignal.trendDir === 'put' ? 'BAIXA (PUT)' : 'NEUTRO'}
-                      </span>
-                    </div>
-                    <p className="text-xs font-mono font-bold text-white leading-tight line-clamp-2">{analyzedSignal.trendLabel}</p>
-                    <span className="text-[10px] font-mono text-emerald-400 block">7x2 + 14x3 &amp; EMA 9/21</span>
-                  </div>
-
-                  {/* Pillar 2: Momentum CCI + RSI */}
-                  <div className="bg-[#020509]/80 p-2.5 rounded-xl border border-emerald-500/20 space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400 font-mono flex items-center gap-1">
-                        <span>⚡</span> CCI (14) + RSI (14)
-                      </span>
-                      <span
-                        className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded uppercase ${
-                          analyzedSignal.momentumDir === 'call'
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : analyzedSignal.momentumDir === 'put'
-                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                        }`}
-                      >
-                        {analyzedSignal.momentumDir === 'call' ? 'COMPRA (CALL)' : analyzedSignal.momentumDir === 'put' ? 'VENDA (PUT)' : 'NEUTRO'}
-                      </span>
-                    </div>
-                    <p className="text-xs font-mono font-bold text-white leading-tight line-clamp-2">{analyzedSignal.momentumLabel}</p>
-                    <span className="text-[10px] font-mono text-emerald-400 block">Next Candle Prediction</span>
-                  </div>
-
-                  {/* Pillar 3: Wick Rejection > 35% */}
-                  <div className="bg-[#020509]/80 p-2.5 rounded-xl border border-emerald-500/20 space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400 font-mono flex items-center gap-1">
-                        <span>🎯</span> Rejeição Pavio &gt;35%
-                      </span>
-                      <span
-                        className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded uppercase ${
-                          analyzedSignal.quotexHackData?.wickRejection?.hasRejection
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : 'bg-slate-800 text-slate-400 border border-white/5'
-                        }`}
-                      >
-                        {analyzedSignal.quotexHackData?.wickRejection?.hasRejection
-                          ? analyzedSignal.quotexHackData.wickRejection.type === 'bull_wick' ? 'COMPRADOR' : 'VENDEDOR'
-                          : 'NORMAL'}
-                      </span>
-                    </div>
-                    <p className="text-xs font-mono font-bold text-white leading-tight line-clamp-2">
-                      {analyzedSignal.quotexHackData?.wickRejection?.description || 'Aguardando exaustão em suporte/resistência'}
-                    </p>
-                    <span className="text-[10px] font-mono text-emerald-400 block">Pavio Rejection &amp; Zonas</span>
-                  </div>
-
-                  {/* Pillar 4: Doji & Noise Filter */}
-                  <div className="bg-[#020509]/80 p-2.5 rounded-xl border border-emerald-500/20 space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400 font-mono flex items-center gap-1">
-                        <span>🛡️</span> Filtro Ruído &amp; Doji
-                      </span>
-                      <span
-                        className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded uppercase ${
-                          analyzedSignal.volatilityApproved
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                            : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                        }`}
-                      >
-                        {analyzedSignal.volatilityApproved ? 'APROVADO' : 'BLOQUEADO'}
-                      </span>
-                    </div>
-                    <p className="text-xs font-mono font-bold text-white leading-tight line-clamp-2">{analyzedSignal.volatilityLabel}</p>
-                    <span className="text-[10px] font-mono text-emerald-400 block">ATR 14 &amp; Anti-Loss</span>
-                  </div>
-                </div>
-
-                {/* QuotexHack Indicator Badge & Confluence Details */}
-                {analyzedSignal.quotexHackData && (
-                  <div className="bg-[#020509]/90 border border-emerald-500/30 rounded-xl p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-mono font-bold text-emerald-400 flex items-center gap-1.5">
-                        <Zap className="w-3.5 h-3.5 fill-emerald-400" />
-                        <span>MÉTRICAS QUOTEXHACK (ALGO & PAVIO)</span>
-                      </span>
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">
-                        {analyzedSignal.quotexHackData.triggerTiming.entryAt}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs font-mono">
-                      <div className="bg-black/50 p-2 rounded-lg border border-white/5">
-                        <span className="text-[10px] text-slate-400 block">Rejeição de Pavio</span>
-                        <span className={`font-bold ${analyzedSignal.quotexHackData.wickRejection.hasRejection ? 'text-emerald-400' : 'text-slate-300'}`}>
-                          {analyzedSignal.quotexHackData.wickRejection.hasRejection
-                            ? analyzedSignal.quotexHackData.wickRejection.type === 'bull_wick' ? '▲ Pavio Inferior (Alta)' : '▼ Pavio Superior (Baixa)'
-                            : 'Neutro / Sem Rejeição'}
-                        </span>
-                      </div>
-
-                      <div className="bg-black/50 p-2 rounded-lg border border-white/5">
-                        <span className="text-[10px] text-slate-400 block">Suporte / Resistência</span>
-                        <span className="font-bold text-white">
-                          {analyzedSignal.quotexHackData.levelReversal.levelType === 'support'
-                            ? '🟢 Próximo ao Suporte'
-                            : analyzedSignal.quotexHackData.levelReversal.levelType === 'resistance'
-                              ? '🔴 Próximo à Resistência'
-                              : 'Meio de Canal'}
-                        </span>
-                      </div>
-
-                      <div className="bg-black/50 p-2 rounded-lg border border-white/5 col-span-2 sm:col-span-1">
-                        <span className="text-[10px] text-slate-400 block">Plano de Recuperação</span>
-                        <span className="font-bold text-emerald-400">
-                          {analyzedSignal.quotexHackData.martingalePlan.recommendedMG} ({analyzedSignal.quotexHackData.martingalePlan.multiplier}x)
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Reason Tag */}
-                <div className="p-3 bg-[#020509]/90 border border-emerald-500/20 rounded-xl space-y-1">
-                  <span className="text-[10px] font-mono text-slate-400 block uppercase tracking-wider">
-                    Confluência Técnica ({signalAnalyzedAt ? `Analisado às ${signalAnalyzedAt}` : 'Recente'}):
-                  </span>
-                  <div className="text-xs font-mono text-slate-200 space-y-0.5">
-                    {analyzedSignal.reasons.map((r, i) => (
-                      <p key={i} className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-                        <span>{r}</span>
-                      </p>
-                    ))}
-                    {analyzedSignal.blocks.map((b, i) => (
-                      <p key={`b-${i}`} className="flex items-center gap-1.5 text-amber-300">
-                        <XCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-                        <span>{b}</span>
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              </div>
+        {/* Motivos Técnicos e Diagnóstico */}
+        <div className="mt-3 pt-3 border-t border-emerald-500/15 flex flex-col md:flex-row items-start md:items-center justify-between gap-2 text-xs font-mono">
+          <div className="flex items-center gap-2 flex-wrap text-slate-300">
+            <span className="text-emerald-400 font-bold">Diagnóstico IA:</span>
+            {analyzedSignal ? (
+              analyzedSignal.verdict !== 'NO_TRADE' ? (
+                <span className="text-emerald-300">{analyzedSignal.reasons.join(' • ')}</span>
+              ) : (
+                <span className="text-amber-300/90">{analyzedSignal.blocks.join(' • ')}</span>
+              )
             ) : (
-              /* Idle / Awaiting Analysis Prompt */
-              <div className="py-10 flex flex-col items-center justify-center text-center space-y-4">
-                {lastFinishedSignalInfo ? (
-                  <div className="w-full bg-emerald-950/40 border border-emerald-500/40 p-3.5 rounded-xl text-left font-mono space-y-1">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-emerald-400 font-bold flex items-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        <span>Sinal Anterior Finalizado com Sucesso</span>
-                      </span>
-                      <span className="text-[10px] text-slate-400">Vela das {lastFinishedSignalInfo.time}</span>
-                    </div>
-                    <p className="text-xs text-slate-300">
-                      A vela da operação <strong className="text-white">({lastFinishedSignalInfo.dir})</strong> encerrou. O painel resetou para você não se confundir.
-                    </p>
-                  </div>
-                ) : null}
-
-                <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shadow-lg">
-                  <Zap className="w-8 h-8 fill-emerald-400/20 text-emerald-400" />
-                </div>
-                <div className="max-w-sm space-y-1">
-                  <h3 className="text-base font-black text-white font-mono">Scanner Pronto · Aguardando Gatilho</h3>
-                  <p className="text-xs text-slate-400 font-mono">
-                    Clique no botão abaixo ou ative o Robô Vector para gerar o sinal de entrada na próxima vela de <strong>{selectedAsset.label}</strong>.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleRescan}
-                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-black font-mono font-black text-xs uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-emerald-500/25 active:scale-95 transition-all cursor-pointer"
-                >
-                  <Zap className="w-4 h-4 fill-black" />
-                  <span>ANALISAR {selectedAsset.label} AGORA</span>
-                </button>
-              </div>
+              <span className="text-slate-400">
+                Aguardando clique em 'Analisar Mercado (IA)' para fixar o sinal e falar a ordem.
+              </span>
             )}
-
-            {/* Manual Trade Actions & Direct Broker Execution */}
-            <div className="space-y-3 pt-3 border-t border-emerald-500/20">
-              {/* Stake Amount Selector */}
-              <div className="bg-[#020509] p-3 rounded-xl border border-emerald-500/20 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <span className="text-xs text-slate-400 font-mono block">Valor da Entrada ({account.currency})</span>
-                    <span className="text-[10px] text-emerald-400/80 font-mono">Permitido a partir de $1.00</span>
-                  </div>
-
-                  {/* Manual Typing Input Field */}
-                  <div className="flex items-center gap-1.5 bg-black/60 border border-emerald-500/40 rounded-lg px-2.5 py-1">
-                    <span className="text-xs font-bold text-emerald-400 font-mono">$</span>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={orderAmount}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!isNaN(val) && val >= 1) {
-                          setOrderAmount(val);
-                        } else if (e.target.value === '') {
-                          setOrderAmount(1);
-                        }
-                      }}
-                      className="w-20 bg-transparent text-sm font-black text-white font-mono focus:outline-none text-right"
-                    />
-                  </div>
-
-                  <div className="text-right font-mono">
-                    <span className="text-[11px] text-slate-400 block">Retorno Estimado</span>
-                    <span className="text-sm font-black text-emerald-400">+${potentialProfit}</span>
-                  </div>
-                </div>
-
-                {/* Fast Preset Buttons (including $1 and $2) */}
-                <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/5">
-                  {[1, 2, 5, 10, 25, 50, 100].map((amt) => (
-                    <button
-                      key={amt}
-                      type="button"
-                      onClick={() => {
-                        playClickSound();
-                        setOrderAmount(amt);
-                      }}
-                      className={`flex-1 min-w-[38px] py-1 rounded-md text-xs font-mono font-bold border transition-all text-center ${
-                        orderAmount === amt
-                          ? 'bg-emerald-400 text-black border-emerald-400 shadow-sm shadow-emerald-500/20'
-                          : 'bg-slate-900/80 text-slate-300 border-white/10 hover:text-white hover:border-emerald-500/30'
-                      }`}
-                    >
-                      ${amt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Next Candle Auto-Fire & Trade Lifecycle Status Banner */}
-              {analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE' && (
-                <div className="bg-[#040c14] border border-emerald-500/40 rounded-xl p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Clock className={`w-4 h-4 ${signalLifecycleStatus === 'IN_TRADE' ? 'text-amber-400 animate-spin' : 'text-emerald-400 animate-pulse'}`} />
-                      <span className="text-xs font-mono font-bold text-white uppercase">
-                        {signalLifecycleStatus === 'IN_TRADE' ? 'Vela da Operação em Andamento' : 'Gatilho de Execução na Próxima Vela'}
-                      </span>
-                    </div>
-                    <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded border ${
-                      signalLifecycleStatus === 'IN_TRADE'
-                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                        : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                    }`}>
-                      {signalLifecycleStatus === 'IN_TRADE' ? `Vela das ${signalNextEntryTime || nextEntryStr}` : `Entrada às ${signalNextEntryTime || nextEntryStr}`}
-                    </span>
-                  </div>
-
-                  {/* Auto-Fire Toggle & Countdown */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1 border-t border-white/5">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          playClickSound();
-                          setAutoFireNextCandle(!autoFireNextCandle);
-                        }}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border flex items-center gap-1.5 ${
-                          autoFireNextCandle
-                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-sm shadow-emerald-500/20'
-                            : 'bg-slate-900 border-white/10 text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        <Zap className={`w-3.5 h-3.5 ${autoFireNextCandle ? 'fill-emerald-400 text-emerald-400' : ''}`} />
-                        <span>{autoFireNextCandle ? 'AUTO-DISPARO ARMADO' : 'AUTO-DISPARO DESATIVADO'}</span>
-                      </button>
-                    </div>
-
-                    <div className="text-right">
-                      <span className="text-[11px] font-mono text-slate-300">
-                        {signalLifecycleStatus === 'IN_TRADE' ? (
-                          <span className="text-amber-400 font-bold">
-                            ⚡ Encerramento da vela em <strong className="text-white text-xs">{secondsToTradeFinish}s</strong>
-                          </span>
-                        ) : autoFireNextCandle ? (
-                          <span className="text-emerald-400 font-bold">
-                            ⏳ Disparo da entrada em <strong className="text-white text-xs">{secondsToEntryCandle}s</strong>
-                          </span>
-                        ) : (
-                          <span className="text-slate-400">Aguardando entrada manual</span>
-                        )}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Visual Progress Bar to Next Candle / Expiration */}
-                  <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
-                    <div
-                      className={`h-full transition-all duration-300 ${
-                        signalLifecycleStatus === 'IN_TRADE'
-                          ? 'bg-amber-400'
-                          : analyzedSignal.verdict === 'CALL'
-                            ? 'bg-emerald-400'
-                            : 'bg-rose-400'
-                      }`}
-                      style={{
-                        width: signalLifecycleStatus === 'IN_TRADE'
-                          ? `${((60 - secondsToTradeFinish) / 60) * 100}%`
-                          : `${((60 - secondsToEntryCandle) / 60) * 100}%`,
-                      }}
-                    />
-                  </div>
-
-                  {lastExecutedCandleTime && (
-                    <div className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                      <span>Última ordem executada na virada às {lastExecutedCandleTime}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Direct Buy / Sell Action Trigger */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  id="manual-execute-order-btn"
-                  onClick={handleManualTrade}
-                  disabled={executing || !analyzedSignal || analyzedSignal.verdict === 'NO_TRADE'}
-                  className={`py-3.5 px-4 rounded-xl font-mono font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-xl transition-all ${
-                    analyzedSignal?.verdict === 'CALL'
-                      ? 'bg-gradient-to-r from-emerald-500 to-emerald-400 text-black hover:from-emerald-400 hover:to-emerald-300 shadow-emerald-500/30 active:scale-[0.98]'
-                      : analyzedSignal?.verdict === 'PUT'
-                        ? 'bg-gradient-to-r from-rose-500 to-rose-400 text-white hover:from-rose-400 hover:to-rose-300 shadow-rose-500/30 active:scale-[0.98]'
-                        : 'bg-slate-900 text-slate-500 border border-slate-800 cursor-not-allowed'
-                  }`}
-                >
-                  {executing ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Enviando Ordem para Broker...</span>
-                    </>
-                  ) : analyzedSignal?.verdict === 'CALL' ? (
-                    <>
-                      <TrendingUp className="w-4 h-4 stroke-[3]" />
-                      <span>EXECUTAR CALL AGORA (${effectiveStake})</span>
-                    </>
-                  ) : analyzedSignal?.verdict === 'PUT' ? (
-                    <>
-                      <TrendingDown className="w-4 h-4 stroke-[3]" />
-                      <span>EXECUTAR PUT AGORA (${effectiveStake})</span>
-                    </>
-                  ) : (
-                    <>
-                      <AlertTriangle className="w-4 h-4 text-amber-400" />
-                      <span>Aguardando Análise</span>
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleRescan}
-                  disabled={isScanning}
-                  className="py-3.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-white/10 hover:border-emerald-500/40 text-white font-mono font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
-                >
-                  <RefreshCw className={`w-4 h-4 ${isScanning ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
-                  <span>{isScanning ? 'Reanalisando...' : 'Reanalisar Ativo'}</span>
-                </button>
-              </div>
-
-              {/* Automatic Trading Robot Sub-Panel */}
-              <div className="bg-[#020509]/90 p-3.5 rounded-xl border border-emerald-500/25 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Bot className={`w-4 h-4 ${robotActive ? 'text-emerald-400' : 'text-slate-400'}`} />
-                    <div>
-                      <span className="text-xs font-bold text-white font-mono block">Robô de Auto-Operação Vector</span>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {robotActive
-                          ? 'Escaneia os 3 votos a cada :58s e dispara na virada :00s'
-                          : 'Desativado (opera apenas quando você clicar em Analisar)'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      playClickSound();
-                      onToggleRobot(!robotActive);
-                    }}
-                    className={`px-3 py-1 rounded-full text-xs font-mono font-bold transition-all border ${
-                      robotActive
-                        ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-sm shadow-emerald-500/20'
-                        : 'bg-slate-900 border-white/10 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {robotActive ? 'ROBÔ ATIVO' : 'ROBÔ DESLIGADO'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-emerald-500/15">
-                  <button
-                    type="button"
-                    onClick={() => setManagementMode('fixed')}
-                    className={`py-1.5 px-2 rounded-lg text-[11px] font-mono font-bold border transition-all ${
-                      managementMode === 'fixed'
-                        ? 'bg-emerald-400 text-black border-emerald-400'
-                        : 'bg-black/50 text-slate-300 border-white/5'
-                    }`}
-                  >
-                    Valor Fixo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManagementMode('soros')}
-                    className={`py-1.5 px-2 rounded-lg text-[11px] font-mono font-bold border transition-all ${
-                      managementMode === 'soros'
-                        ? 'bg-emerald-400 text-black border-emerald-400'
-                        : 'bg-black/50 text-slate-300 border-white/5'
-                    }`}
-                  >
-                    Soros (Nv {currentSorosLevel})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManagementMode('martingale')}
-                    className={`py-1.5 px-2 rounded-lg text-[11px] font-mono font-bold border transition-all ${
-                      managementMode === 'martingale'
-                        ? 'bg-emerald-400 text-black border-emerald-400'
-                        : 'bg-black/50 text-slate-300 border-white/5'
-                    }`}
-                  >
-                    Martingale
-                  </button>
-                </div>
-              </div>
-            </div>
+          </div>
+          <div className="text-[11px] text-slate-400 flex items-center gap-1">
+            <Sparkles className="w-3 h-3 text-emerald-400" />
+            <span>
+              Confiança:{' '}
+              <strong className="text-white">
+                {analyzedSignal ? `${analyzedSignal.confidence}%` : 'Aguardando Análise'}
+              </strong>
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Gráfico de Velas M1 OTC da OPTGO Broker */}
-      <div id="prisma-candlestick-chart-section" className="w-full">
+      {/* Assistente de Voz Interativo do Robô (Ouve e Fala com o Operador) */}
+      <MarketVoiceAssistant
+        selectedAsset={selectedAsset}
+        candles={candles}
+        metrics={realtimeMetrics}
+        secondsToNextCandle={secondsToNextCandle}
+        autoVoiceAlerts={autoVoiceAlerts}
+        onToggleAutoVoice={() => {
+          playClickSound();
+          setAutoVoiceAlerts((prev) => !prev);
+        }}
+      />
+
+      {/* Painel de Seleção de Ativos e Timeframes */}
+      <div className="bg-[#050a12]/95 border border-emerald-500/20 rounded-2xl p-5 shadow-xl backdrop-blur-md space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-500/20 pb-3">
+          <div>
+            <span className="text-[10px] font-mono font-bold text-emerald-400 uppercase tracking-widest block mb-0.5">
+              [ SELEÇÃO DO ATIVO ]
+            </span>
+            <h2 className="text-lg font-black text-white font-mono tracking-tight">
+              Paridades &amp; Tempo Gráfico
+            </h2>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onOpenAssetModal}
+              className="text-xs font-bold font-mono text-emerald-400 hover:text-emerald-300 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 transition-colors"
+            >
+              <Search className="w-3.5 h-3.5" />
+              <span>Todos os 148 Ativos</span>
+              <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono font-bold">
+                Ctrl + V
+              </kbd>
+            </button>
+          </div>
+        </div>
+
+        {/* Seleção Rápida de Ativos */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-400">
+            <span>Ativos Rápidos OTC:</span>
+            <span className="text-emerald-400 font-bold">{selectedAsset.label} selecionado</span>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            {quickPairs.map((asset) => {
+              const isSelected = selectedAsset.id === asset.id;
+              return (
+                <button
+                  key={asset.id}
+                  type="button"
+                  onClick={() => {
+                    playClickSound();
+                    onSelectAsset(asset);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border flex items-center gap-1.5 ${
+                    isSelected
+                      ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-sm font-bold'
+                      : 'bg-slate-900/70 text-slate-300 border-white/10 hover:border-emerald-500/30 hover:text-white'
+                  }`}
+                >
+                  <span>{asset.label}</span>
+                  <span
+                    className={`text-[10px] px-1 py-0.2 rounded font-mono ${
+                      isSelected ? 'bg-slate-950/30 text-slate-950' : 'bg-emerald-500/10 text-emerald-400'
+                    }`}
+                  >
+                    {asset.payout || 88}%
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Seleção de Timeframe */}
+        <div className="space-y-1.5 pt-1">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-400">
+            <span>Tempo de Vela:</span>
+            <span className="text-emerald-400 font-bold">{selectedTimeframe} (Recomendado M1 pelo vídeo)</span>
+          </div>
+
+          <div className="grid grid-cols-6 sm:grid-cols-11 gap-1">
+            {TIMEFRAMES.map((tf) => {
+              const isSelected = selectedTimeframe === tf.id;
+              return (
+                <button
+                  key={tf.id}
+                  type="button"
+                  onClick={() => {
+                    playClickSound();
+                    setSelectedTimeframe(tf.id);
+                  }}
+                  className={`py-1.5 rounded-md text-xs font-bold transition-all border text-center ${
+                    isSelected
+                      ? 'bg-emerald-400 text-slate-950 border-emerald-400 shadow-md shadow-emerald-500/20 font-black'
+                      : 'bg-slate-900/70 text-slate-300 border-white/10 hover:border-emerald-500/30 hover:text-white'
+                  }`}
+                >
+                  {tf.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Gráfico com Velas Gordinhas Estilo Order Flow + Linha SuperTrend + Sinais + RSI */}
+      <div id="prisma-supertrend-rsi-chart" className="w-full">
         <CandleChart
           candles={candles}
           activeId={selectedAsset.id}
           symbol={selectedAsset.symbol}
-          precision={selectedAsset.precision || 5}
-          gatilhoTaxa50={analysis?.gatilhoTaxa50}
-          nextDir={analyzedSignal?.verdict === 'CALL' ? 'call' : analyzedSignal?.verdict === 'PUT' ? 'put' : undefined}
-          nextProb={analyzedSignal?.confidencePct}
+          precision={precision}
+          isAnalyzing={isAnalyzing}
+          scanStatusText={scanStatusText}
         />
       </div>
     </div>

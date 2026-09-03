@@ -10,6 +10,7 @@ import { LoginScreen } from '@/components/LoginScreen';
 import {
   playWinSound,
   playLossSound,
+  playClickSound,
 } from '@/lib/sound';
 
 export default function App() {
@@ -45,6 +46,25 @@ export default function App() {
   const [currentSorosLevel, setCurrentSorosLevel] = useState<number>(1);
   const [isAssetModalOpen, setIsAssetModalOpen] = useState<boolean>(false);
   const [isSsidModalOpen, setIsSsidModalOpen] = useState<boolean>(false);
+
+  // Atalho Global: Pressionar Ctrl + V (ou Cmd + V) abre automaticamente a lista de todos os ativos
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+        const activeTag = (document.activeElement?.tagName || '').toUpperCase();
+        // Se o modal de ativos já estiver aberto e o usuário estiver colando num input de busca, mantém o comportamento padrão de colagem
+        if (isAssetModalOpen && (activeTag === 'INPUT' || activeTag === 'TEXTAREA')) {
+          return;
+        }
+        e.preventDefault();
+        playClickSound();
+        setIsAssetModalOpen(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isAssetModalOpen]);
 
   // Fetch initial assets and account
   useEffect(() => {
@@ -354,8 +374,6 @@ export default function App() {
         isDemo={isDemo}
         onToggleDemo={setIsDemo}
         onOpenSsidModal={() => setIsSsidModalOpen(true)}
-        robotActive={robotActive}
-        onToggleRobot={() => setRobotActive(!robotActive)}
         onLogout={handleLogout}
       />
 
@@ -367,17 +385,9 @@ export default function App() {
             selectedAsset={selectedAsset}
             onSelectAsset={(asset) => setSelectedAsset(asset)}
             candles={candles}
-            analysis={analysis}
             account={account}
-            isDemo={isDemo}
-            onToggleAccountType={setIsDemo}
             onOpenSsidModal={() => setIsSsidModalOpen(true)}
             onOpenAssetModal={() => setIsAssetModalOpen(true)}
-            onExecuteOrder={handleExecuteOrder}
-            executing={executing}
-            robotActive={robotActive}
-            onToggleRobot={setRobotActive}
-            currentSorosLevel={currentSorosLevel}
           />
 
           {/* Global Market Clock (Real-Time Sessions & Brasília Time) */}

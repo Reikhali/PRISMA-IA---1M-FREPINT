@@ -163,3 +163,40 @@ export function playClickSound() {
   osc.start(now);
   osc.stop(now + 0.05);
 }
+
+/** Síntese de Voz Nativa em Português para Anúncio de Sinais do Robô IA */
+export function speakVoiceNotification(text: string) {
+  if (!soundEnabled) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+  try {
+    window.speechSynthesis.cancel();
+
+    const doSpeak = () => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'pt-BR';
+      utterance.rate = 1.05;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      const voices = window.speechSynthesis.getVoices();
+      const ptVoice = voices.find((v) => v.lang.toLowerCase().includes('pt-br') || v.lang.toLowerCase().includes('pt'));
+      if (ptVoice) {
+        utterance.voice = ptVoice;
+      }
+      window.speechSynthesis.speak(utterance);
+    };
+
+    const initialVoices = window.speechSynthesis.getVoices();
+    if (initialVoices.length === 0 && window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        doSpeak();
+        window.speechSynthesis.onvoiceschanged = null;
+      };
+    } else {
+      doSpeak();
+    }
+  } catch (err) {
+    console.warn('Falha na síntese de voz:', err);
+  }
+}

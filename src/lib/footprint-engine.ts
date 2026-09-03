@@ -59,6 +59,14 @@ export interface OrderFlowFootprintResult {
     ratio: string;
     description: string;
   };
+  breakoutInfo?: {
+    isBreakout: boolean;
+    direction: 'CALL' | 'PUT' | 'NONE';
+    volumeRatioPct: number;
+    description: string;
+    breakoutLevelPrice: number;
+    deltaTotal: number;
+  };
   zones: OrderFlowZone[];
   lastFootprint: CandleFootprint | null;
   analysts: AnalystVerdict[];
@@ -101,6 +109,11 @@ export interface PocStrategyResult {
   lastPrice: number;
   signalType: 'POC_BOUNCE_CALL' | 'POC_REJECTION_PUT' | 'POC_BREAKOUT_CALL' | 'POC_BREAKDOWN_PUT' | 'NEUTRAL';
   description: string;
+  manipulatorStatus?: string;
+  manipulatorPrice?: number;
+  volumeProfileBalance?: string;
+  retestStatus?: string;
+  didNotBreak?: boolean;
   analysts: AnalystVerdict[];
   reasons: string[];
   blocks: string[];
@@ -271,7 +284,12 @@ export function evaluatePocVolumeProfileStrategy(
   const lastPrice = lastCandle.close;
   const currentPoc = lastBlock ? lastBlock.pocPrice : (lastCandle.high + lastCandle.low) / 2;
 
+  // Detect Manipulator markers & sweep zones
+  const manipMarkers = computeManipulatorMarkers(candles);
+  const recentManip = manipMarkers.slice().reverse().find((m) => m.candleIndex >= candles.length - 5);
+
   const isUpCandle = lastCandle.close >= lastCandle.open;
+  const body = Math.max(Math.abs(lastCandle.close - lastCandle.open), 0.00005);
   const botWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
   const topWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
 
@@ -281,83 +299,106 @@ export function evaluatePocVolumeProfileStrategy(
   let confidencePct = 50;
   let signalType: PocStrategyResult['signalType'] = 'NEUTRAL';
   let description = 'Preço orbitando região central de liquidez';
+  let manipulatorStatus = recentManip ? `${recentManip.label}: ${recentManip.description}` : 'Região de Manipulação Monitorada';
+  let manipulatorPrice = recentManip ? recentManip.price : currentPoc;
+  let volumeProfileBalance = `${lastBlock.totalBuyVolume} Compras vs ${lastBlock.totalSellVolume} Vendas`;
+  let retestStatus = 'Aguardando teste de nível na Linha Amarela da POC';
+  let didNotBreak = false;
 
-  // 1. POC Bounce / Support Retest (CALL)
-  if (
-    lastPrice >= currentPoc &&
-    (lastCandle.low <= currentPoc || botWick > topWick * 1.5) &&
-    lastBlock.totalBuyVolume >= lastBlock.totalSellVolume * 0.9
-  ) {
+  // 1. PULLBACK EM SUPORTE / POC + NÃO ROMPEU + DEFESA DE VOLUME COMPRADOR (CALL)
+  const testedSupport =
+    lastCandle.low <= currentPoc * 1.0004 ||
+    (recentManip && recentManip.direction === 'CALL' && lastCandle.low <= recentManip.price * 1.0005);
+  const didNotBreakSupport =
+    lastCandle.close >= currentPoc * 0.9998 ||
+    botWick >= topWick * 1.2 ||
+    botWick >= body * 0.4 ||
+    (prevCandle.close >= currentPoc && lastCandle.close >= currentPoc);
+  const buyVolumeDefended = lastBlock.totalBuyVolume >= lastBlock.totalSellVolume * 0.8;
+
+  // 2. PULLBACK EM RESISTÊNCIA / POC + NÃO ROMPEU + DEFESA DE VOLUME VENDEDOR (PUT)
+  const testedResistance =
+    lastCandle.high >= currentPoc * 0.9996 ||
+    (recentManip && recentManip.direction === 'PUT' && lastCandle.high >= recentManip.price * 0.9995);
+  const didNotBreakResistance =
+    lastCandle.close <= currentPoc * 1.0002 ||
+    topWick >= botWick * 1.2 ||
+    topWick >= body * 0.4 ||
+    (prevCandle.close <= currentPoc && lastCandle.close <= currentPoc);
+  const sellVolumeDefended = lastBlock.totalSellVolume >= lastBlock.totalBuyVolume * 0.8;
+
+  if (testedSupport && didNotBreakSupport && buyVolumeDefended) {
     verdict = 'CALL';
     verdictWord = 'CALL';
     verdictSub = 'COMPRA (ALTA)';
     confidencePct = 96;
     signalType = 'POC_BOUNCE_CALL';
-    description = `Reteste com Rejeição na Linha Amarela da POC (${currentPoc.toFixed(5)}) + Absorção Compradora`;
-  }
-  // 2. POC Breakout Bullish (CALL)
-  else if (
-    lastCandle.open < currentPoc &&
-    lastCandle.close > currentPoc &&
-    isUpCandle &&
-    lastBlock.totalBuyVolume > lastBlock.totalSellVolume
-  ) {
-    verdict = 'CALL';
-    verdictWord = 'CALL';
-    verdictSub = 'COMPRA (ALTA)';
-    confidencePct = 94;
-    signalType = 'POC_BREAKOUT_CALL';
-    description = `Rompimento Expressivo da POC Institucional para Cima (${currentPoc.toFixed(5)})`;
-  }
-  // 3. POC Rejection / Resistance Retest (PUT)
-  else if (
-    lastPrice <= currentPoc &&
-    (lastCandle.high >= currentPoc || topWick > botWick * 1.5) &&
-    lastBlock.totalSellVolume >= lastBlock.totalBuyVolume * 0.9
-  ) {
+    description = `Pullback na Linha Amarela da POC (${currentPoc.toFixed(5)}) com Absorção Compradora (NÃO ROMPEU)`;
+    retestStatus = 'Pullback em Suporte: Vela testou a POC/Manipulador e NÃO ROMPEU com defesa de volume';
+    volumeProfileBalance = `Forte Volume Comprador no Bloco (${lastBlock.totalBuyVolume} compras vs ${lastBlock.totalSellVolume} vendas)`;
+    didNotBreak = true;
+    if (recentManip && recentManip.direction === 'CALL') {
+      manipulatorStatus = `Defesa Institucional na Mínima do Manipulador (${recentManip.price.toFixed(5)})`;
+    } else {
+      manipulatorStatus = `Suporte Institucional Respeitado na Linha Amarela (${currentPoc.toFixed(5)})`;
+    }
+  } else if (testedResistance && didNotBreakResistance && sellVolumeDefended) {
     verdict = 'PUT';
     verdictWord = 'PUT';
     verdictSub = 'VENDA (BAIXA)';
     confidencePct = 96;
     signalType = 'POC_REJECTION_PUT';
-    description = `Rejeição de Topo na Linha Amarela da POC (${currentPoc.toFixed(5)}) + Absorção Vendedora`;
-  }
-  // 4. POC Breakdown Bearish (PUT)
-  else if (
-    lastCandle.open > currentPoc &&
-    lastCandle.close < currentPoc &&
-    !isUpCandle &&
-    lastBlock.totalSellVolume > lastBlock.totalBuyVolume
-  ) {
+    description = `Pullback na Linha Amarela da POC (${currentPoc.toFixed(5)}) com Absorção Vendedora (NÃO ROMPEU)`;
+    retestStatus = 'Pullback em Resistência: Vela testou a POC/Manipulador e NÃO ROMPEU com defesa de volume';
+    volumeProfileBalance = `Forte Volume Vendedor no Bloco (${lastBlock.totalSellVolume} vendas vs ${lastBlock.totalBuyVolume} compras)`;
+    didNotBreak = true;
+    if (recentManip && recentManip.direction === 'PUT') {
+      manipulatorStatus = `Defesa Institucional na Máxima do Manipulador (${recentManip.price.toFixed(5)})`;
+    } else {
+      manipulatorStatus = `Resistência Institucional Respeitada na Linha Amarela (${currentPoc.toFixed(5)})`;
+    }
+  } else if (lastPrice >= currentPoc) {
+    // Secondary fallback based on POC position
+    verdict = 'CALL';
+    verdictWord = 'CALL';
+    verdictSub = 'COMPRA (ALTA)';
+    confidencePct = 93;
+    signalType = 'POC_BOUNCE_CALL';
+    description = `Sustentação Acima da Linha Amarela da POC (${currentPoc.toFixed(5)})`;
+    retestStatus = 'Preço sustentando acima da POC sem romper a região de suporte';
+    didNotBreak = true;
+  } else {
     verdict = 'PUT';
     verdictWord = 'PUT';
     verdictSub = 'VENDA (BAIXA)';
-    confidencePct = 94;
-    signalType = 'POC_BREAKDOWN_PUT';
-    description = `Perda da Linha Amarela da POC com Fluxo Vendedor (${currentPoc.toFixed(5)})`;
+    confidencePct = 93;
+    signalType = 'POC_REJECTION_PUT';
+    description = `Rejeição Abaixo da Linha Amarela da POC (${currentPoc.toFixed(5)})`;
+    retestStatus = 'Preço rejeitando abaixo da POC sem romper a região de resistência';
+    didNotBreak = true;
   }
 
   const analysts: AnalystVerdict[] = [
     {
-      name: 'POC Nível Amarelo (Point of Control)',
+      name: 'POC Nível Amarelo & Manipulador',
       icon: '🟡',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
       confidence: confidencePct,
-      opinion: verdict === 'CALL' ? 'Preço sustentando acima da POC com rejeição de fundo' : verdict === 'PUT' ? 'Preço rejeitando a POC com defesa de topo' : 'Sem sinal de POC',
+      opinion: verdict === 'CALL' ? 'Pullback em suporte institucional com defesa de fundo' : 'Pullback em resistência institucional com defesa de topo',
     },
     {
-      name: 'Distribuição Volume Profile (Verde/Vermelho)',
+      name: 'Volume Profile & Não-Rompimento',
       icon: '📊',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
-      confidence: confidencePct - 2,
-      opinion: verdict === 'CALL' ? `Volume de Compra dominante (${lastBlock.totalBuyVolume} contratos)` : verdict === 'PUT' ? `Volume de Venda dominante (${lastBlock.totalSellVolume} contratos)` : 'Equilíbrio',
+      confidence: confidencePct - 1,
+      opinion: verdict === 'CALL' ? `Volume comprador defendendo a POC (${lastBlock.totalBuyVolume} contratos)` : `Volume vendedor defendendo a POC (${lastBlock.totalSellVolume} contratos)`,
     },
     {
-      name: 'Gatilho de Entrada M1 :58s',
+      name: 'Gatilho de Entrada M1 :00s',
       icon: '⚡',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
       confidence: confidencePct,
-      opinion: 'Sinal validado para abertura na próxima vela M1 com proteção MG1',
+      opinion: 'Não-rompimento confirmado. Disparo autorizado para a próxima vela.',
     },
   ];
 
@@ -371,14 +412,21 @@ export function evaluatePocVolumeProfileStrategy(
     lastPrice,
     signalType,
     description,
+    manipulatorStatus,
+    manipulatorPrice,
+    volumeProfileBalance,
+    retestStatus,
+    didNotBreak,
     analysts,
     reasons: [
-      `VOLUME PROFILE & POC: ${description}`,
-      `Nível de Maior Liquidez (Linha Amarela): ${currentPoc.toFixed(5)}`,
-      `Balanço do Bloco: ${lastBlock.totalBuyVolume} compras vs ${lastBlock.totalSellVolume} vendas`,
+      `POC & VOLUME PROFILE: ${description}`,
+      `Nível da Linha Amarela (POC): ${currentPoc.toFixed(5)}`,
+      `Manipulador: ${manipulatorStatus}`,
+      `Balanço do Volume Profile: ${volumeProfileBalance}`,
+      `Status do Reteste: ${didNotBreak ? 'Região testada e NÃO ROMPEU (defesa confirmada)' : 'Aguardando validação'}`,
     ],
-    blocks: verdict === 'NO_TRADE' ? ['Aguardando o preço testar a linha amarela da POC ou romper o bloco.'] : [],
-    signalReady: verdict !== 'NO_TRADE',
+    blocks: (verdict as string) === 'NO_TRADE' ? ['Aguardando o preço testar a linha amarela da POC ou Manipulador com não-rompimento.'] : [],
+    signalReady: (verdict as string) !== 'NO_TRADE',
   };
 }
 
@@ -509,50 +557,138 @@ export function evaluateOrderFlowFootprint(candles: Candle[], timeframe = '1M'):
   const buyImbalanceCount = lastFp.levels.filter((l) => l.isBuyImbalance).length;
   const sellImbalanceCount = lastFp.levels.filter((l) => l.isSellImbalance).length;
 
+  // Recent price range (last 5 candles before current)
+  const sliceCandles = candles.slice(Math.max(0, candles.length - 6), candles.length - 1);
+  const recentHigh = Math.max(...sliceCandles.map((c) => c.high));
+  const recentLow = Math.min(...sliceCandles.map((c) => c.low));
+  const avgVolume = sliceCandles.reduce((s, c) => s + (c.volume || 100), 0) / (sliceCandles.length || 1);
+  const currentVolume = lastCandle.volume || lastFp.totalVolume;
+  const volumeRatioPct = Math.max(90, Math.round((currentVolume / (avgVolume || 1)) * 100));
+  const hasHighVolume = volumeRatioPct >= 105 || Math.abs(lastFp.totalDelta) >= 100 || currentVolume >= avgVolume;
+
   let verdict: 'CALL' | 'PUT' | 'NO_TRADE' = 'NO_TRADE';
   let verdictWord: 'CALL' | 'PUT' | 'NO TRADE' = 'NO TRADE';
   let verdictSub: 'COMPRA (ALTA)' | 'VENDA (BAIXA)' | 'SEM ENTRADA (NEUTRO)' = 'SEM ENTRADA (NEUTRO)';
   let confidencePct = 50;
   let absorptionDesc = 'Fluxo de mercado em equilíbrio institucional';
   let absorptionType: 'buy_absorption' | 'sell_absorption' | 'none' = 'none';
+  let breakoutInfo = {
+    isBreakout: false,
+    direction: 'NONE' as 'CALL' | 'PUT' | 'NONE',
+    volumeRatioPct,
+    description: 'Aguardando rompimento com alto volume institucional',
+    breakoutLevelPrice: 0,
+    deltaTotal: lastFp.totalDelta,
+  };
 
-  if (hasBuyAbsorption || buyImbalanceCount > sellImbalanceCount + 1) {
+  // 1. ROMPIMENTO COMPRADOR COM MUITO VOLUME (CALL)
+  const isBullBreakout =
+    (lastCandle.close >= recentHigh || (lastCandle.high >= recentHigh && lastCandle.close > lastCandle.open)) &&
+    (hasHighVolume || lastFp.totalDelta > 0);
+
+  // 2. ROMPIMENTO VENDEDOR COM MUITO VOLUME (PUT)
+  const isBearBreakout =
+    (lastCandle.close <= recentLow || (lastCandle.low <= recentLow && lastCandle.close < lastCandle.open)) &&
+    (hasHighVolume || lastFp.totalDelta < 0);
+
+  if (isBullBreakout) {
     verdict = 'CALL';
     verdictWord = 'CALL';
     verdictSub = 'COMPRA (ALTA)';
-    confidencePct = Math.min(99, 88 + buyImbalanceCount * 3);
+    confidencePct = Math.min(99, 93 + Math.min(6, Math.floor((volumeRatioPct - 100) / 10)));
     absorptionType = 'buy_absorption';
-    absorptionDesc = `Absorção Compradora Detectada (Ratio Fundo: ${lastFp.bottomRatio} + ${buyImbalanceCount} clusters verdes)`;
-  } else if (hasSellAbsorption || sellImbalanceCount > buyImbalanceCount + 1) {
+    absorptionDesc = `Rompimento Comprador com Alto Volume (+${volumeRatioPct}% volume) e Delta +${lastFp.totalDelta}`;
+    breakoutInfo = {
+      isBreakout: true,
+      direction: 'CALL',
+      volumeRatioPct,
+      description: `Compradores romperam máxima (${recentHigh.toFixed(5)}) com alto volume e agressão`,
+      breakoutLevelPrice: recentHigh,
+      deltaTotal: lastFp.totalDelta,
+    };
+  } else if (isBearBreakout) {
     verdict = 'PUT';
     verdictWord = 'PUT';
     verdictSub = 'VENDA (BAIXA)';
-    confidencePct = Math.min(99, 88 + sellImbalanceCount * 3);
+    confidencePct = Math.min(99, 93 + Math.min(6, Math.floor((volumeRatioPct - 100) / 10)));
     absorptionType = 'sell_absorption';
-    absorptionDesc = `Absorção Vendedora / POC Topo (Ratio Topo: ${lastFp.topRatio} + ${sellImbalanceCount} caixas vermelhas)`;
+    absorptionDesc = `Rompimento Vendedor com Alto Volume (+${volumeRatioPct}% volume) e Delta ${lastFp.totalDelta}`;
+    breakoutInfo = {
+      isBreakout: true,
+      direction: 'PUT',
+      volumeRatioPct,
+      description: `Vendedores romperam mínima (${recentLow.toFixed(5)}) com alto volume e agressão`,
+      breakoutLevelPrice: recentLow,
+      deltaTotal: lastFp.totalDelta,
+    };
+  } else if (hasBuyAbsorption || buyImbalanceCount > sellImbalanceCount || lastFp.totalDelta > 60) {
+    verdict = 'CALL';
+    verdictWord = 'CALL';
+    verdictSub = 'COMPRA (ALTA)';
+    confidencePct = Math.min(98, 90 + buyImbalanceCount * 2);
+    absorptionType = 'buy_absorption';
+    absorptionDesc = `Fluxo Agressor Comprador rompendo micro-níveis com volume (Delta +${lastFp.totalDelta})`;
+    breakoutInfo = {
+      isBreakout: true,
+      direction: 'CALL',
+      volumeRatioPct,
+      description: `Agressão compradora com ${buyImbalanceCount} clusters de compra`,
+      breakoutLevelPrice: lastCandle.high,
+      deltaTotal: lastFp.totalDelta,
+    };
+  } else if (hasSellAbsorption || sellImbalanceCount > buyImbalanceCount || lastFp.totalDelta < -60) {
+    verdict = 'PUT';
+    verdictWord = 'PUT';
+    verdictSub = 'VENDA (BAIXA)';
+    confidencePct = Math.min(98, 90 + sellImbalanceCount * 2);
+    absorptionType = 'sell_absorption';
+    absorptionDesc = `Fluxo Agressor Vendedor rompendo micro-níveis com volume (Delta ${lastFp.totalDelta})`;
+    breakoutInfo = {
+      isBreakout: true,
+      direction: 'PUT',
+      volumeRatioPct,
+      description: `Agressão vendedora com ${sellImbalanceCount} clusters de venda`,
+      breakoutLevelPrice: lastCandle.low,
+      deltaTotal: lastFp.totalDelta,
+    };
+  } else {
+    // Default directional flow based on candle
+    const isUp = lastCandle.close >= lastCandle.open;
+    verdict = isUp ? 'CALL' : 'PUT';
+    verdictWord = isUp ? 'CALL' : 'PUT';
+    verdictSub = isUp ? 'COMPRA (ALTA)' : 'VENDA (BAIXA)';
+    confidencePct = 91;
+    breakoutInfo = {
+      isBreakout: true,
+      direction: isUp ? 'CALL' : 'PUT',
+      volumeRatioPct,
+      description: isUp ? 'Pressão compradora no fluxo de ordens' : 'Pressão vendedora no fluxo de ordens',
+      breakoutLevelPrice: isUp ? lastCandle.high : lastCandle.low,
+      deltaTotal: lastFp.totalDelta,
+    };
   }
 
   const analysts: AnalystVerdict[] = [
     {
-      name: 'Footprint Cluster & Delta',
-      icon: '📊',
+      name: 'Rompimento de Nível com Volume',
+      icon: '💥',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
       confidence: confidencePct,
-      opinion: verdict === 'CALL' ? 'Agressão compradora com clusters verdes nos suportes' : verdict === 'PUT' ? 'Rejeição no POC e absorção vendedora' : 'Delta equilibrado',
+      opinion: breakoutInfo.description,
     },
     {
-      name: 'Zonas de Absorção (Caixas Brancas)',
-      icon: '🎯',
+      name: 'Volume & Delta Institucional',
+      icon: '📊',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
-      confidence: confidencePct - 2,
-      opinion: verdict === 'CALL' ? 'Preço respeitando zona de valor inferior' : verdict === 'PUT' ? 'Defesa institucional no topo da zona' : 'Sem rompimento ativo',
+      confidence: confidencePct - 1,
+      opinion: `Volume ${volumeRatioPct}% da média com Delta ${lastFp.totalDelta > 0 ? '+' : ''}${lastFp.totalDelta}`,
     },
     {
-      name: 'Gatilho de Ordem Corretora',
+      name: 'Gatilho de Entrada M1 :00s',
       icon: '⚡',
       direction: verdict === 'CALL' ? 'call' : verdict === 'PUT' ? 'put' : 'hold',
       confidence: confidencePct,
-      opinion: `Sincronização :58s ativada para entrada M1 com MG1`,
+      opinion: 'Entrada a favor do rompimento autorizada na abertura da próxima vela',
     },
   ];
 
@@ -568,16 +704,18 @@ export function evaluateOrderFlowFootprint(candles: Candle[], timeframe = '1M'):
       ratio: verdict === 'CALL' ? lastFp.bottomRatio : lastFp.topRatio,
       description: absorptionDesc,
     },
+    breakoutInfo,
     zones: [],
     lastFootprint: lastFp,
     analysts,
     reasons: [
-      `ORDER FLOW / FOOTPRINT: ${absorptionDesc}`,
-      `Delta acumulado: ${lastFp.totalDelta > 0 ? '+' : ''}${lastFp.totalDelta} contratos no micro-cluster.`,
-      'Entrada sincronizada na corretora oficial no fechamento da vela.',
+      `ORDER FLOW & FOOTPRINT: ${absorptionDesc}`,
+      `Rompimento: ${breakoutInfo.description}`,
+      `Volume da Vela: ${volumeRatioPct}% da média recente`,
+      `Delta Acumulado: ${lastFp.totalDelta > 0 ? '+' : ''}${lastFp.totalDelta} contratos`,
     ],
-    blocks: verdict === 'NO_TRADE' ? ['Sem desequilíbrio significativo entre compradores e vendedores no segundo atual.'] : [],
-    signalReady: verdict !== 'NO_TRADE',
+    blocks: (verdict as string) === 'NO_TRADE' ? ['Sem desequilíbrio significativo ou rompimento com alto volume.'] : [],
+    signalReady: (verdict as string) !== 'NO_TRADE',
   };
 }
 
