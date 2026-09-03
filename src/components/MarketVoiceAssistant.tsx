@@ -35,7 +35,7 @@ export const MarketVoiceAssistant: React.FC<MarketVoiceAssistantProps> = ({
   const [messages, setMessages] = useState<Message[]>([
     {
       sender: 'bot',
-      text: `Olá! Sou o assistente de voz do robô Prisma IA. Estou monitorando ${selectedAsset.label} em tempo real. Você pode falar comigo pelo microfone ou me perguntar sobre a tendência, o SuperTrend, o RSI ou se há sinal de entrada agora.`,
+      text: `Olá! Sou o assistente de voz do robô Prisma IA. Estou monitorando ${selectedAsset.label} e a movimentação real da vela atual em tempo real. Você pode falar comigo pelo microfone ou me perguntar sobre a vela atual, o SuperTrend, o RSI ou se há confluência no nascimento da vela.`,
       time: new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(new Date()),
     },
   ]);
@@ -100,7 +100,6 @@ export const MarketVoiceAssistant: React.FC<MarketVoiceAssistantProps> = ({
     (query: string): string => {
       const q = query.toLowerCase();
       const lastCandle = candles[candles.length - 1];
-      const prevCandle = candles[candles.length - 2];
       const isGreen = lastCandle ? lastCandle.close >= lastCandle.open : true;
       const stDir = metrics.superTrendDirection === 'BULLISH' ? 'Alta' : 'Baixa';
       const rsiVal = metrics.rsiValue.toFixed(1);
@@ -109,17 +108,17 @@ export const MarketVoiceAssistant: React.FC<MarketVoiceAssistantProps> = ({
       // Pergunta sobre comprar ou vender / sinal
       if (q.includes('compr') || q.includes('vend') || q.includes('sinal') || q.includes('entr') || q.includes('devo')) {
         if (metrics.verdict === 'CALL') {
-          return `O mercado está favorável para COMPRA no par ${selectedAsset.label}! O SuperTrend está verde em alta e o RSI está em ${rsiVal}, com momentum comprador sem exaustão. Faltam ${secondsToNextCandle} segundos para a virada da vela. O momento ideal de execução é exatamente aos 00 segundos.`;
+          return `O robô identificou confluência de COMPRA na vela atual no par ${selectedAsset.label}! O SuperTrend está verde confirmando suporte dinâmico, e o RSI está em ${rsiVal} com momentum comprador ativo sem exaustão. O gatilho abre no nascimento da vela aos 00 segundos para capturar o verdadeiro movimento do preço.`;
         } else if (metrics.verdict === 'PUT') {
-          return `O mercado está favorável para VENDA no par ${selectedAsset.label}! O SuperTrend está vermelho em baixa e o RSI está em ${rsiVal}, confirmando força vendedora sem exaustão. Faltam ${secondsToNextCandle} segundos para o término da vela M1. Prepare sua ordem para os 00 segundos.`;
+          return `O robô identificou confluência de VENDA na vela atual no par ${selectedAsset.label}! O SuperTrend está vermelho confirmando resistência dinâmica, e o RSI está em ${rsiVal} com fluxo vendedor ativo sem exaustão. O gatilho abre no nascimento da vela aos 00 segundos para capturar a descida real do preço.`;
         } else {
-          return `Neste momento recomendo cautela e proteção no par ${selectedAsset.label}. ${metrics.blocks.join('. ')}. Aguarde uma confluência perfeita entre o SuperTrend e o RSI para entrar com segurança.`;
+          return `Na vela atual recomendo cautela e proteção no par ${selectedAsset.label}. ${metrics.blocks.join('. ')}. ${metrics.priceAction ? `Comportamento atual: ${metrics.priceAction}.` : ''} O robô monitora o nascimento de cada vela para encontrar a confluência perfeita.`;
         }
       }
 
       // Pergunta sobre tendência / SuperTrend
       if (q.includes('tend') || q.includes('supertrend') || q.includes('direção') || q.includes('direcao')) {
-        return `A tendência calculada pelo SuperTrend para ${selectedAsset.label} é de ${stDir.toUpperCase()}, posicionado em ${metrics.superTrendValue.toFixed(selectedAsset.precision || 5)}. A vela atual é ${isGreen ? 'verde de alta' : 'vermelha de baixa'}. O RSI está em ${rsiVal}.`;
+        return `A tendência calculada pelo SuperTrend para ${selectedAsset.label} é de ${stDir.toUpperCase()}, posicionado em ${metrics.superTrendValue.toFixed(selectedAsset.precision || 5)}. A vela atual é ${isGreen ? 'verde de alta' : 'vermelha de baixa'}. O RSI está em ${rsiVal}. ${metrics.priceAction || ''}`;
       }
 
       // Pergunta sobre RSI / momentum / força
@@ -130,13 +129,13 @@ export const MarketVoiceAssistant: React.FC<MarketVoiceAssistantProps> = ({
             : metrics.rsiValue <= 30
             ? 'em sobrevenda extrema (abaixo de 30)'
             : 'dentro da faixa segura e saudável entre 30 e 70';
-        return `O oscilador RSI de período 9 está medindo ${rsiVal}, indicando fluxo ${rsiSide}. O mercado está ${exhaustionStatus}, o que é essencial para evitar falsos rompimentos.`;
+        return `O oscilador RSI de período 9 está medindo ${rsiVal}, indicando fluxo ${rsiSide}. O mercado está ${exhaustionStatus}, mantendo a vela atual dentro dos parâmetros seguros da estratégia.`;
       }
 
       // Pergunta sobre o que está acontecendo / análise geral do mercado
-      return `Análise do robô para ${selectedAsset.label}: Estamos em gráfico de 1 minuto OTC. O SuperTrend indica tendência de ${stDir}, com RSI em ${rsiVal} (${rsiSide}). Situação operacional: ${metrics.verdict === 'CALL' ? 'Sinal ativo de COMPRA' : metrics.verdict === 'PUT' ? 'Sinal ativo de VENDA' : 'Mercado sem confluência unânime, proteção ativada'}. Faltam ${secondsToNextCandle} segundos para a próxima vela.`;
+      return `Análise da vela atual para ${selectedAsset.label}: Estamos em gráfico de 1 minuto OTC. O SuperTrend indica tendência de ${stDir}, com RSI em ${rsiVal} (${rsiSide}). ${metrics.priceAction || ''}. Situação operacional na vela atual: ${metrics.verdict === 'CALL' ? 'Sinal ativo de COMPRA no nascimento' : metrics.verdict === 'PUT' ? 'Sinal ativo de VENDA no nascimento' : 'Mercado sem confluência unânime, proteção ativada'}.`;
     },
-    [candles, metrics, selectedAsset, secondsToNextCandle]
+    [candles, metrics, selectedAsset]
   );
 
   // Processa a pergunta do usuário e responde com voz

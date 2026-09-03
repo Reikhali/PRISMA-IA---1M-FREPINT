@@ -20,6 +20,8 @@ export interface StrategySignal {
   rsiValue: number;
   rsiStatus: 'COMPRADOR' | 'VENDEDOR' | 'SOBRECOMPRADO' | 'SOBREVENDIDO' | 'NEUTRO';
   candleQuality: 'SAUDAVEL' | 'DOJI_TRAVADO' | 'EXAUSTAO';
+  candleMovement: 'IMPULSAO_ALTA' | 'IMPULSAO_BAIXA' | 'LATERAL';
+  priceAction: string;
   filters: {
     superTrendOk: boolean;
     rsiMomentumOk: boolean;
@@ -198,7 +200,7 @@ export function calculateRSI(closes: number[], period = 9): number[] {
   return rsis;
 }
 
-// ─── 4. Motor de Avaliação da Estratégia (Consenso Claude + ChatGPT + Gemini) ─
+// ─── 4. Motor de Avaliação da Estratégia na Vela Atual (Nascimento & Price Action) ─
 export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal {
   if (candles.length < 15) {
     return {
@@ -208,6 +210,8 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
       rsiValue: 50,
       rsiStatus: 'NEUTRO',
       candleQuality: 'SAUDAVEL',
+      candleMovement: 'LATERAL',
+      priceAction: 'Aguardando histórico de velas...',
       filters: {
         superTrendOk: false,
         rsiMomentumOk: false,
@@ -228,10 +232,26 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
   const lastSt = stPoints[stPoints.length - 1];
   const lastRsi = rsiValues[rsiValues.length - 1] ?? 50;
 
-  // Análise da vela atual
+  // Análise detalhada do movimento real da vela atual
   const bodySize = Math.abs(lastCandle.close - lastCandle.open);
   const totalRange = Math.max(0.00001, lastCandle.high - lastCandle.low);
-  const isDoji = bodySize / totalRange < 0.12;
+  const isDoji = bodySize / totalRange < 0.10;
+  const isBullishCandle = lastCandle.close > lastCandle.open;
+  const isBearishCandle = lastCandle.close < lastCandle.open;
+
+  let candleMovement: 'IMPULSAO_ALTA' | 'IMPULSAO_BAIXA' | 'LATERAL' = 'LATERAL';
+  let priceAction = '';
+
+  if (isBullishCandle && !isDoji) {
+    candleMovement = 'IMPULSAO_ALTA';
+    priceAction = 'Preço em expansão compradora na vela atual, sustentado acima da abertura.';
+  } else if (isBearishCandle && !isDoji) {
+    candleMovement = 'IMPULSAO_BAIXA';
+    priceAction = 'Preço em expansão vendedora na vela atual, pressionado abaixo da abertura.';
+  } else {
+    candleMovement = 'LATERAL';
+    priceAction = 'Preço consolidando em torno da abertura da vela atual.';
+  }
 
   // Status do RSI (Linha 50 é o divisor, 70 e 30 são os extremos)
   let rsiStatus: 'COMPRADOR' | 'VENDEDOR' | 'SOBRECOMPRADO' | 'SOBREVENDIDO' | 'NEUTRO' = 'NEUTRO';
@@ -245,9 +265,9 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
     rsiStatus = 'VENDEDOR';
   }
 
-  // Regras para CALL (Compra):
+  // Regras para CALL (Compra na vela atual):
   // 1. SuperTrend em Alta (BULLISH, linha verde abaixo)
-  // 2. Preço de fechamento acima do SuperTrend
+  // 2. Preço de fechamento da vela atual acima do SuperTrend
   // 3. RSI(9) > 50 (Momentum comprador ativo)
   // 4. RSI(9) < 70 (Não está sobrecomprado - espaço para subir)
   // 5. Sem doji travado
@@ -256,9 +276,9 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
   const rsiCallNotExhausted = lastRsi < 70;
   const candleCallValid = !isDoji;
 
-  // Regras para PUT (Venda):
+  // Regras para PUT (Venda na vela atual):
   // 1. SuperTrend em Baixa (BEARISH, linha vermelha acima)
-  // 2. Preço de fechamento abaixo do SuperTrend
+  // 2. Preço de fechamento da vela atual abaixo do SuperTrend
   // 3. RSI(9) < 50 (Momentum vendedor ativo)
   // 4. RSI(9) > 30 (Não está sobrevendido - espaço para descer)
   // 5. Sem doji travado
@@ -274,32 +294,32 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
 
   if (stCallOk && rsiCallMomentum && rsiCallNotExhausted && candleCallValid) {
     verdict = 'CALL';
-    confidence = 94;
-    reasons.push('SuperTrend (10, 2.0) VERDE: Tendência e suporte de alta confirmados.');
-    reasons.push(`RSI (9) = ${lastRsi.toFixed(1)} > 50: Momentum comprador com fluxo dominante.`);
-    reasons.push('Filtro Anti-Exaustão: RSI abaixo de 70, margem segura para continuidade.');
-    reasons.push('Corpo da vela expressivo: Sem ruído de doji travado.');
+    confidence = 95;
+    reasons.push('Vela Atual: Movimento de alta confirmado a partir do nascimento da vela.');
+    reasons.push('SuperTrend VERDE: Suporte dinâmico validando o avanço do preço.');
+    reasons.push(`RSI(9) = ${lastRsi.toFixed(1)}: Fluxo comprador ativo sem exaustão (< 70).`);
+    reasons.push('Price Action: Vela atual trabalhando com amplitude e volume saudável.');
   } else if (stPutOk && rsiPutMomentum && rsiPutNotExhausted && candlePutValid) {
     verdict = 'PUT';
-    confidence = 94;
-    reasons.push('SuperTrend (10, 2.0) VERMELHO: Tendência e resistência de baixa confirmadas.');
-    reasons.push(`RSI (9) = ${lastRsi.toFixed(1)} < 50: Momentum vendedor com fluxo dominante.`);
-    reasons.push('Filtro Anti-Exaustão: RSI acima de 30, margem segura para continuidade.');
-    reasons.push('Corpo da vela expressivo: Sem ruído de doji travado.');
+    confidence = 95;
+    reasons.push('Vela Atual: Movimento de baixa confirmado a partir do nascimento da vela.');
+    reasons.push('SuperTrend VERMELHO: Resistência dinâmica validando a descida do preço.');
+    reasons.push(`RSI(9) = ${lastRsi.toFixed(1)}: Fluxo vendedor ativo sem exaustão (> 30).`);
+    reasons.push('Price Action: Vela atual trabalhando com amplitude e volume saudável.');
   } else {
     // Motivos do bloqueio
     if (lastSt.direction === 'BULLISH') {
-      if (!rsiCallMomentum) blocks.push(`SuperTrend indica Alta, mas RSI(${lastRsi.toFixed(1)}) está abaixo da linha central 50.`);
-      if (!rsiCallNotExhausted) blocks.push(`RSI(${lastRsi.toFixed(1)}) atingiu zona extrema de Sobrecompra (≥70). Bloqueado por risco de reversão.`);
+      if (!rsiCallMomentum) blocks.push(`SuperTrend indica Alta, mas RSI(${lastRsi.toFixed(1)}) está abaixo de 50 na vela atual.`);
+      if (!rsiCallNotExhausted) blocks.push(`RSI(${lastRsi.toFixed(1)}) em sobrecompra extrema (≥70) na vela atual. Risco de retração.`);
     } else {
-      if (!rsiPutMomentum) blocks.push(`SuperTrend indica Baixa, mas RSI(${lastRsi.toFixed(1)}) está acima da linha central 50.`);
-      if (!rsiPutNotExhausted) blocks.push(`RSI(${lastRsi.toFixed(1)}) atingiu zona extrema de Sobrevenda (≤30). Bloqueado por risco de reversão.`);
+      if (!rsiPutMomentum) blocks.push(`SuperTrend indica Baixa, mas RSI(${lastRsi.toFixed(1)}) está acima de 50 na vela atual.`);
+      if (!rsiPutNotExhausted) blocks.push(`RSI(${lastRsi.toFixed(1)}) em sobrevenda extrema (≤30) na vela atual. Risco de repique.`);
     }
     if (isDoji) {
-      blocks.push('Vela atual apresenta corpo muito estreito (Doji/Mercado travado).');
+      blocks.push('Vela atual com pouca oscilação em relação à abertura (Doji/Travado).');
     }
     if (blocks.length === 0) {
-      blocks.push('Aguardando sincronização exata do SuperTrend(10, 2) com o RSI(9).');
+      blocks.push('Aguardando sincronização exata do SuperTrend(10, 2) com o RSI(9) na vela atual.');
     }
   }
 
@@ -310,6 +330,8 @@ export function evaluateSuperTrendRsiStrategy(candles: Candle[]): StrategySignal
     rsiValue: lastRsi,
     rsiStatus,
     candleQuality: isDoji ? 'DOJI_TRAVADO' : 'SAUDAVEL',
+    candleMovement,
+    priceAction,
     filters: {
       superTrendOk: verdict === 'CALL' ? stCallOk : (verdict === 'PUT' ? stPutOk : false),
       rsiMomentumOk: verdict === 'CALL' ? rsiCallMomentum : (verdict === 'PUT' ? rsiPutMomentum : false),

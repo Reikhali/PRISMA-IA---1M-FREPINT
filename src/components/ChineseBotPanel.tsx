@@ -157,20 +157,20 @@ export function ChineseBotPanel({
 
       if (computedSignal.verdict === 'CALL') {
         playSignalTriggerSound('call');
-        speakVoiceNotification(`Atenção! Sinal de Compra confirmado em M1 para ${selectedAsset.label}.`);
+        speakVoiceNotification(`Atenção! Sinal de Compra confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}.`);
       } else if (computedSignal.verdict === 'PUT') {
         playSignalTriggerSound('put');
-        speakVoiceNotification(`Atenção! Sinal de Venda confirmado em M1 para ${selectedAsset.label}.`);
+        speakVoiceNotification(`Atenção! Sinal de Venda confirmado no nascimento da vela atual em M1 para ${selectedAsset.label}.`);
       } else {
         playClickSound();
-        speakVoiceNotification(`Mercado sem confluência para ${selectedAsset.label}. Proteção ativada.`);
+        speakVoiceNotification(`Vela atual sem confluência para ${selectedAsset.label}. Proteção ativada.`);
       }
     }, 1300);
   }, [isAnalyzing, candles, selectedAsset.label]);
 
-  // Alerta automático do robô: mesmo se o operador não clicou no botão de análise,
-  // quando as métricas confirmam um sinal (CALL ou PUT) na virada (:58s a :00s),
-  // o robô detecta sozinho, avisa por voz e fixa o sinal na tela.
+  // Alerta automático do robô no nascimento da vela atual:
+  // Quando as métricas confirmam um sinal (CALL ou PUT) logo no nascimento (:00s a :08s),
+  // o robô detecta a movimentação real do preço na vela atual, avisa por voz e fixa o sinal.
   useEffect(() => {
     if (!autoVoiceAlerts || isAnalyzing) return;
     if (candles.length < 15) return;
@@ -178,8 +178,8 @@ export function ChineseBotPanel({
     const lastCandle = candles[candles.length - 1];
     if (!lastCandle) return;
 
-    // Dispara apenas no momento decisivo da virada de vela (:58s ou :00s)
-    if (candleSeconds >= 58 || candleSeconds === 0) {
+    // Dispara no nascimento da vela atual (:00s a :08s) ou no segundo inicial
+    if (candleSeconds <= 8 || candleSeconds >= 59) {
       if (lastAutoAlertCandleTimeRef.current === lastCandle.time) return;
 
       if (realtimeMetrics.verdict === 'CALL' || realtimeMetrics.verdict === 'PUT') {
@@ -198,10 +198,10 @@ export function ChineseBotPanel({
 
         if (realtimeMetrics.verdict === 'CALL') {
           playSignalTriggerSound('call');
-          speakVoiceNotification(`Alerta automático do robô! Confluência de Compra detectada em ${selectedAsset.label} para a próxima vela.`);
+          speakVoiceNotification(`Alerta do robô! Confluência de Compra detectada no nascimento da vela atual para ${selectedAsset.label}.`);
         } else {
           playSignalTriggerSound('put');
-          speakVoiceNotification(`Alerta automático do robô! Confluência de Venda detectada em ${selectedAsset.label} para a próxima vela.`);
+          speakVoiceNotification(`Alerta do robô! Confluência de Venda detectada no nascimento da vela atual para ${selectedAsset.label}.`);
         }
       }
     }
@@ -322,20 +322,20 @@ export function ChineseBotPanel({
               {isAnalyzing ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
-                  <span>LENDO GRÁFICO &amp; TICKS EM TEMPO REAL...</span>
+                  <span>LENDO VELA ATUAL &amp; PRICE ACTION...</span>
                 </>
               ) : (
                 <>
                   <Eye className="w-4 h-4 text-slate-950" />
-                  <span>{analyzedSignal ? 'REANALISAR MERCADO AGORA (IA)' : 'ANALISAR MERCADO AGORA (IA)'}</span>
+                  <span>{analyzedSignal ? 'REANALISAR VELA ATUAL (IA)' : 'ANALISAR VELA ATUAL (IA)'}</span>
                 </>
               )}
             </button>
 
             <span className="text-[11px] text-slate-400">
               {analyzedSignal
-                ? 'Sinal fixado e validado. Não altera sozinho a cada segundo.'
-                : 'Clique para o robô ler o gráfico, escanear os ticks e falar o sinal.'}
+                ? 'Sinal validado na vela atual. Acompanhando a movimentação do preço.'
+                : 'Clique para o robô ler a ação do preço no nascimento da vela atual.'}
             </span>
           </div>
 
@@ -344,7 +344,7 @@ export function ChineseBotPanel({
               <Scan className="w-3.5 h-3.5 text-emerald-400" />
               <span>Status IA:</span>
               <strong className="text-white">
-                {isAnalyzing ? 'Lendo gráfico & ticks...' : analyzedSignal ? 'Análise Concluída' : 'Pronto para Analisar'}
+                {isAnalyzing ? 'Lendo nascimento & ticks...' : analyzedSignal ? 'Análise Concluída' : 'Pronto para Analisar'}
               </strong>
             </span>
             {lastAnalysisTime && (
@@ -355,7 +355,7 @@ export function ChineseBotPanel({
             )}
             {hasScannedManual && (
               <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] border border-emerald-500/30 font-bold">
-                Sinal Estável
+                Vela Atual Ativa
               </span>
             )}
           </div>
@@ -372,23 +372,23 @@ export function ChineseBotPanel({
                   ESTRATÉGIA SUPERTREND (10, 2) + RSI (9, 50)
                 </h2>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold uppercase">
-                  M1 · EXPIRAÇÃO 1M
+                  ENTRADA NA VELA ATUAL · M1
                 </span>
               </div>
               <p className="text-xs text-slate-400 font-mono mt-0.5">
-                Consenso de 3 IAs. O sinal é gerado exclusivamente quando você clica em Analisar Mercado e fala em voz alta na tela.
+                Consenso de 3 IAs analisando a vela atual no nascimento (:00s) para capturar a verdadeira ação e fluxo do preço.
               </p>
             </div>
           </div>
 
-          {/* Veredicto do Sinal (Fixo pós-análise, sem ficar pulando) */}
+          {/* Veredicto do Sinal (Vela Atual) */}
           <div className="flex items-center gap-3">
             {analyzedSignal === null ? (
               <div className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-900/80 flex items-center gap-3 font-mono">
                 <Bot className="w-5 h-5 text-emerald-400 animate-pulse" />
                 <div>
                   <div className="text-[10px] text-slate-400 font-bold uppercase">ROBÔ EM ESPERA</div>
-                  <div className="text-sm font-black text-emerald-400">CLIQUE EM 'ANALISAR MERCADO'</div>
+                  <div className="text-sm font-black text-emerald-400">CLIQUE EM 'ANALISAR VELA ATUAL'</div>
                 </div>
               </div>
             ) : analyzedSignal.verdict === 'CALL' ? (
@@ -396,7 +396,7 @@ export function ChineseBotPanel({
                 <TrendingUp className="w-6 h-6 text-emerald-400 animate-bounce" />
                 <div>
                   <div className="text-[10px] text-emerald-400 font-bold flex items-center gap-1.5">
-                    <span>SINAL GERADO PELA IA</span>
+                    <span>SINAL NA VELA ATUAL</span>
                     <span className="text-slate-400">({lastAnalysisTime})</span>
                   </div>
                   <div className="text-base font-black text-white">COMPRA (CALL) M1</div>
@@ -407,7 +407,7 @@ export function ChineseBotPanel({
                 <TrendingDown className="w-6 h-6 text-rose-400 animate-bounce" />
                 <div>
                   <div className="text-[10px] text-rose-400 font-bold flex items-center gap-1.5">
-                    <span>SINAL GERADO PELA IA</span>
+                    <span>SINAL NA VELA ATUAL</span>
                     <span className="text-slate-400">({lastAnalysisTime})</span>
                   </div>
                   <div className="text-base font-black text-white">VENDA (PUT) M1</div>
@@ -426,11 +426,11 @@ export function ChineseBotPanel({
               </div>
             )}
 
-            {/* Virada da vela */}
+            {/* Tempo da Vela Atual */}
             <div className="bg-black/60 border border-emerald-500/30 px-3 py-2 rounded-xl text-center font-mono">
-              <div className="text-[10px] text-slate-400">VIRADA M1</div>
+              <div className="text-[10px] text-slate-400">VELA ATUAL M1</div>
               <div className="text-base font-black text-emerald-400">:{String(candleSeconds).padStart(2, '0')}s</div>
-              <div className="text-[9px] text-slate-500">em {secondsToNextCandle}s</div>
+              <div className="text-[9px] text-slate-400">decorrido de 60s</div>
             </div>
           </div>
         </div>
@@ -542,7 +542,7 @@ export function ChineseBotPanel({
             </p>
           </div>
 
-          {/* Card 4: Gatilho de Entrada & Qualidade da Vela */}
+          {/* Card 4: Gatilho no Nascimento (Vela Atual) */}
           <div
             className={`p-3.5 rounded-xl border font-mono transition-all ${
               analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE'
@@ -553,21 +553,25 @@ export function ChineseBotPanel({
             <div className="flex items-center justify-between text-xs mb-1.5">
               <span className="font-bold flex items-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5" />
-                4. Gatilho de Virada
+                4. Gatilho no Nascimento
               </span>
               <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
-                {realtimeMetrics.candleQuality}
+                {realtimeMetrics.candleMovement === 'IMPULSAO_ALTA'
+                  ? 'IMPULSO ALTA'
+                  : realtimeMetrics.candleMovement === 'IMPULSAO_BAIXA'
+                  ? 'IMPULSO BAIXA'
+                  : 'CONSOLIDAÇÃO'}
               </span>
             </div>
             <div className="text-lg font-black text-white">
               {analyzedSignal && analyzedSignal.verdict !== 'NO_TRADE' ? (
-                <span className="text-emerald-400">ENTRADA :00s</span>
+                <span className="text-emerald-400">NASCIMENTO :00s</span>
               ) : (
-                <span className="text-slate-400">STANDBY</span>
+                <span className="text-slate-400">VELA ATUAL</span>
               )}
             </div>
             <p className="text-[11px] text-slate-400 mt-1">
-              Entrada precisa na abertura da vela de M1 (:00s) com vela expressiva.
+              {realtimeMetrics.priceAction || 'Lendo o verdadeiro movimento do preço na vela atual.'}
             </p>
           </div>
         </div>
@@ -584,7 +588,7 @@ export function ChineseBotPanel({
               )
             ) : (
               <span className="text-slate-400">
-                Aguardando clique em 'Analisar Mercado (IA)' para fixar o sinal e falar a ordem.
+                Aguardando clique em 'Analisar Vela Atual (IA)' para fixar o sinal e falar a ordem.
               </span>
             )}
           </div>
